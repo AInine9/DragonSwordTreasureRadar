@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -131,6 +132,22 @@ namespace DragonSwordTreasureRadar
                 // Logging must never terminate the overlay.
             }
         }
+
+        public static void WriteInfo(string message)
+        {
+            try
+            {
+                File.AppendAllText(
+                    Path,
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " +
+                    message + Environment.NewLine
+                );
+            }
+            catch
+            {
+                // Logging must never terminate the overlay.
+            }
+        }
     }
 
     internal static class GameProcessFinder
@@ -171,6 +188,30 @@ namespace DragonSwordTreasureRadar
         }
     }
 
+    internal static class GeometryLog
+    {
+        public static readonly string Path = System.IO.Path.Combine(
+            AppDomain.CurrentDomain.BaseDirectory,
+            "DragonSwordTreasureRadarGeometry.log"
+        );
+
+        public static void Write(string message)
+        {
+            try
+            {
+                File.AppendAllText(
+                    Path,
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " +
+                    message + Environment.NewLine
+                );
+            }
+            catch
+            {
+                // Diagnostic logging must never terminate the overlay.
+            }
+        }
+    }
+
     internal sealed class RadarForm : Form
     {
         // DragonSword's circular minimap is inset slightly from the game
@@ -184,6 +225,10 @@ namespace DragonSwordTreasureRadar
         private const int WsExTransparent = 0x20;
         private const int WsExToolWindow = 0x80;
         private const int WsExLayered = 0x80000;
+        private const uint SwpNoActivate = 0x0010;
+        private const uint SwpShowWindow = 0x0040;
+        private static readonly IntPtr HwndTopmost =
+            new IntPtr(-1);
 
         private readonly Timer _timer;
         private readonly string _statePath;
@@ -194,11 +239,7 @@ namespace DragonSwordTreasureRadar
         private DateTime _lastStateWriteUtc;
         private float _displayScale = 1f;
         private int _overlaySize = ReferenceOverlaySize;
-        private string _resolutionConfigPath;
-        private DateTime _resolutionConfigWriteUtc;
-        private DateTime _nextResolutionCheckUtc;
-        private int _configuredWindowHeight;
-        private int _configuredFullscreenMode = -1;
+        private string _lastGeometryLog;
 
         public RadarForm()
         {
@@ -207,6 +248,7 @@ namespace DragonSwordTreasureRadar
                 "radar_state.json"
             );
             UpdateGeometry(Screen.PrimaryScreen.Bounds.Height);
+            AutoScaleMode = AutoScaleMode.None;
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             TopMost = true;
@@ -360,6 +402,10 @@ namespace DragonSwordTreasureRadar
         {
             int targetX;
             int targetY;
+            IntPtr gameWindow = IntPtr.Zero;
+            Rect gameRectangle = new Rect();
+            bool hasGameRectangle = false;
+            bool usedClientRectangle = false;
             Rectangle workingArea = Screen.PrimaryScreen.WorkingArea;
             UpdateGeometry(Screen.PrimaryScreen.Bounds.Height);
             targetX = workingArea.Right
@@ -383,31 +429,24 @@ namespace DragonSwordTreasureRadar
                         if (handle != IntPtr.Zero
                             && GetWindowRect(handle, out rectangle))
                         {
-                            int configuredHeight =
-                                GetConfiguredWindowHeight(process);
-                            int geometryHeight =
-                                configuredHeight > 0
-                                    ? configuredHeight
-                                    : rectangle.Bottom - rectangle.Top;
-                            if (_configuredFullscreenMode == 2)
+                            gameWindow = handle;
+                            Rect clientRectangle;
+                            if (TryGetClientScreenRect(
+                                handle,
+                                out clientRectangle))
                             {
-                                Rect clientRectangle;
-                                if (TryGetClientScreenRect(
-                                    handle,
-                                    out clientRectangle))
-                                {
-                                    rectangle = clientRectangle;
-                                    // In windowed mode, Win32 returns client
-                                    // coordinates in this process's DPI
-                                    // coordinate space. ResolutionSizeY is
-                                    // stored in the game's physical pixels.
-                                    // Mixing the two makes the overlay about
-                                    // twice as large at 200% display scaling.
-                                    geometryHeight =
-                                        clientRectangle.Bottom
-                                        - clientRectangle.Top;
-                                }
+                                // The actual client area is the game's render
+                                // surface in windowed, borderless, and
+                                // fullscreen modes. Using it directly avoids
+                                // stale FullscreenMode settings, window-frame
+                                // offsets, and mixed DPI coordinate spaces.
+                                rectangle = clientRectangle;
+                                usedClientRectangle = true;
                             }
+                            gameRectangle = rectangle;
+                            hasGameRectangle = true;
+                            int geometryHeight =
+                                rectangle.Bottom - rectangle.Top;
                             UpdateGeometry(geometryHeight);
                             targetX = rectangle.Right
                                 - _overlaySize
@@ -423,16 +462,111 @@ namespace DragonSwordTreasureRadar
                 ErrorLog.Write("Game window detection failed; using desktop position", exception);
             }
 
-            if (Left != targetX || Top != targetY
-                || Width != _overlaySize || Height != _overlaySize)
+            Rect overlayRectangle;
+            bool alreadyPositioned =
+                IsHandleCreated
+                && GetWindowRect(Handle, out overlayRectangle)
+                && overlayRectangle.Left == targetX
+                && overlayRectangle.Top == targetY
+                && overlayRectangle.Right - overlayRectangle.Left
+                    == _overlaySize
+                && overlayRectangle.Bottom - overlayRectangle.Top
+                    == _overlaySize;
+            if (!alreadyPositioned)
             {
-                SetBounds(
+                // Set the overlay in native screen pixels. WinForms can
+                // otherwise apply an additional monitor-DPI conversion when
+                // a borderless form is moved to a differently scaled monitor.
+                if (!SetWindowPos(
+                    Handle,
+                    HwndTopmost,
                     targetX,
                     targetY,
                     _overlaySize,
                     _overlaySize,
-                    BoundsSpecified.All
+                    SwpNoActivate | SwpShowWindow
+                ))
+                {
+                    ErrorLog.WriteInfo(
+                        "Overlay SetWindowPos failed: Win32 error " +
+                        Marshal.GetLastWin32Error()
+                    );
+                }
+            }
+
+            if (hasGameRectangle)
+            {
+                LogGeometry(
+                    gameWindow,
+                    gameRectangle,
+                    usedClientRectangle,
+                    targetX,
+                    targetY
                 );
+            }
+        }
+
+        private void LogGeometry(
+            IntPtr gameWindow,
+            Rect gameRectangle,
+            bool usedClientRectangle,
+            int targetX,
+            int targetY)
+        {
+            Rect actualOverlay;
+            bool hasActualOverlay =
+                GetWindowRect(Handle, out actualOverlay);
+            uint gameDpi = GetWindowDpi(gameWindow);
+            uint overlayDpi = GetWindowDpi(Handle);
+            string message = string.Format(
+                CultureInfo.InvariantCulture,
+                "Geometry: game={0},{1} {2}x{3}; source={4}; " +
+                "gameDpi={5}; target={6},{7} {8}x{8}; " +
+                "actual={9}; overlayDpi={10}; scale={11:0.####}",
+                gameRectangle.Left,
+                gameRectangle.Top,
+                gameRectangle.Right - gameRectangle.Left,
+                gameRectangle.Bottom - gameRectangle.Top,
+                usedClientRectangle ? "client" : "window",
+                gameDpi,
+                targetX,
+                targetY,
+                _overlaySize,
+                hasActualOverlay
+                    ? string.Format(
+                        CultureInfo.InvariantCulture,
+                        "{0},{1} {2}x{3}",
+                        actualOverlay.Left,
+                        actualOverlay.Top,
+                        actualOverlay.Right - actualOverlay.Left,
+                        actualOverlay.Bottom - actualOverlay.Top)
+                    : "unavailable",
+                overlayDpi,
+                _displayScale
+            );
+            if (!string.Equals(
+                message,
+                _lastGeometryLog,
+                StringComparison.Ordinal))
+            {
+                _lastGeometryLog = message;
+                GeometryLog.Write(message);
+            }
+        }
+
+        private static uint GetWindowDpi(IntPtr window)
+        {
+            try
+            {
+                return GetDpiForWindow(window);
+            }
+            catch (EntryPointNotFoundException)
+            {
+                return 0;
+            }
+            catch (DllNotFoundException)
+            {
+                return 0;
             }
         }
 
@@ -453,92 +587,6 @@ namespace DragonSwordTreasureRadar
         private int ScalePixels(int referencePixels)
         {
             return (int)Math.Round(referencePixels * _displayScale);
-        }
-
-        private int GetConfiguredWindowHeight(Process game)
-        {
-            DateTime now = DateTime.UtcNow;
-            if (now < _nextResolutionCheckUtc)
-            {
-                return _configuredWindowHeight;
-            }
-            _nextResolutionCheckUtc = now.AddSeconds(2);
-
-            try
-            {
-                string executableDirectory = Path.GetDirectoryName(
-                    game.MainModule.FileName
-                );
-                string configPath = Path.GetFullPath(Path.Combine(
-                    executableDirectory,
-                    @"..\..\Saved\Config\Windows\GameUserSettings.ini"
-                ));
-                if (!string.Equals(
-                    configPath,
-                    _resolutionConfigPath,
-                    StringComparison.OrdinalIgnoreCase))
-                {
-                    _resolutionConfigPath = configPath;
-                    _resolutionConfigWriteUtc = DateTime.MinValue;
-                    _configuredWindowHeight = 0;
-                    _configuredFullscreenMode = -1;
-                }
-
-                if (!File.Exists(configPath))
-                {
-                    return 0;
-                }
-
-                DateTime writeTime = File.GetLastWriteTimeUtc(configPath);
-                if (writeTime == _resolutionConfigWriteUtc)
-                {
-                    return _configuredWindowHeight;
-                }
-
-                int height = 0;
-                int fullscreenMode = -1;
-                foreach (string line in File.ReadLines(configPath))
-                {
-                    string trimmed = line.Trim();
-                    const string heightKey = "ResolutionSizeY=";
-                    const string modeKey = "FullscreenMode=";
-                    if (trimmed.StartsWith(
-                        heightKey,
-                        StringComparison.OrdinalIgnoreCase))
-                    {
-                        int.TryParse(
-                            trimmed.Substring(heightKey.Length),
-                            out height
-                        );
-                    }
-                    else if (trimmed.StartsWith(
-                        modeKey,
-                        StringComparison.OrdinalIgnoreCase))
-                    {
-                        int.TryParse(
-                            trimmed.Substring(modeKey.Length),
-                            out fullscreenMode
-                        );
-                    }
-                }
-
-                _resolutionConfigWriteUtc = writeTime;
-                _configuredFullscreenMode = fullscreenMode;
-                // UE stores the desktop work-area height in ResolutionSizeY
-                // for borderless mode (FullscreenMode=1). That excludes the
-                // taskbar even though the game covers the full monitor, so
-                // use the detected game-window height in this mode.
-                _configuredWindowHeight =
-                    fullscreenMode == 1 ? 0 : Math.Max(0, height);
-            }
-            catch
-            {
-                // Fall back to the detected game-window height.
-                _configuredWindowHeight = 0;
-                _configuredFullscreenMode = -1;
-            }
-
-            return _configuredWindowHeight;
         }
 
         private static bool TryGetClientScreenRect(
@@ -637,6 +685,22 @@ namespace DragonSwordTreasureRadar
         private static extern bool ClientToScreen(
             IntPtr windowHandle,
             ref NativePoint point
+        );
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetWindowPos(
+            IntPtr windowHandle,
+            IntPtr insertAfter,
+            int x,
+            int y,
+            int width,
+            int height,
+            uint flags
+        );
+
+        [DllImport("user32.dll")]
+        private static extern uint GetDpiForWindow(
+            IntPtr windowHandle
         );
 
         [StructLayout(LayoutKind.Sequential)]
