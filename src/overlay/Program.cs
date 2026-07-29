@@ -217,6 +217,7 @@ namespace DragonSwordTreasureRadar
         // DragonSword's circular minimap is inset slightly from the game
         // window's right edge. The window itself stays fully transparent;
         // only treasure dots are painted over the game's minimap.
+        private const float ReferenceWindowWidth = 2560f;
         private const float ReferenceWindowHeight = 1440f;
         private const int ReferenceOverlaySize = 360;
         private const int ReferenceRightMargin = 40;
@@ -247,7 +248,10 @@ namespace DragonSwordTreasureRadar
                 AppDomain.CurrentDomain.BaseDirectory,
                 "radar_state.json"
             );
-            UpdateGeometry(Screen.PrimaryScreen.Bounds.Height);
+            UpdateGeometry(
+                Screen.PrimaryScreen.Bounds.Width,
+                Screen.PrimaryScreen.Bounds.Height
+            );
             AutoScaleMode = AutoScaleMode.None;
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
@@ -407,7 +411,10 @@ namespace DragonSwordTreasureRadar
             bool hasGameRectangle = false;
             bool usedClientRectangle = false;
             Rectangle workingArea = Screen.PrimaryScreen.WorkingArea;
-            UpdateGeometry(Screen.PrimaryScreen.Bounds.Height);
+            UpdateGeometry(
+                Screen.PrimaryScreen.Bounds.Width,
+                Screen.PrimaryScreen.Bounds.Height
+            );
             targetX = workingArea.Right
                 - _overlaySize
                 - ScalePixels(ReferenceRightMargin);
@@ -445,9 +452,14 @@ namespace DragonSwordTreasureRadar
                             }
                             gameRectangle = rectangle;
                             hasGameRectangle = true;
+                            int geometryWidth =
+                                rectangle.Right - rectangle.Left;
                             int geometryHeight =
                                 rectangle.Bottom - rectangle.Top;
-                            UpdateGeometry(geometryHeight);
+                            UpdateGeometry(
+                                geometryWidth,
+                                geometryHeight
+                            );
                             targetX = rectangle.Right
                                 - _overlaySize
                                 - ScalePixels(ReferenceRightMargin);
@@ -570,14 +582,26 @@ namespace DragonSwordTreasureRadar
             }
         }
 
-        private void UpdateGeometry(int windowHeight)
+        private void UpdateGeometry(
+            int windowWidth,
+            int windowHeight)
         {
+            if (windowWidth <= 0)
+            {
+                windowWidth = (int)ReferenceWindowWidth;
+            }
             if (windowHeight <= 0)
             {
                 windowHeight = (int)ReferenceWindowHeight;
             }
 
-            _displayScale = windowHeight / ReferenceWindowHeight;
+            // DragonSword keeps its HUD on a 16:9 reference canvas.
+            // On taller aspect ratios (such as 4:3 and 16:10), the UI is
+            // limited by width rather than height.
+            _displayScale = Math.Min(
+                windowWidth / ReferenceWindowWidth,
+                windowHeight / ReferenceWindowHeight
+            );
             _overlaySize = Math.Max(
                 1,
                 (int)Math.Round(ReferenceOverlaySize * _displayScale)
