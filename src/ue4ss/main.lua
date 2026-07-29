@@ -23,18 +23,25 @@ if not ok_config then
     return
 end
 
-local RADAR_RADIUS = 22500.0
+local TOWN_RADAR_RADIUS = 12500.0
+local FIELD_RADAR_RADIUS = 22500.0
+local MINIMAP_SCALE_THRESHOLD = 2.7
+local MINIMAP_SCALE_CHECK_INTERVAL_MS = 1000
 local MAX_RADAR_POINTS = 80
 local UPDATE_INTERVAL_MS = 250
 local WORLD_MAP_ID = 100
 
 local world_treasures = nil
+local radar_radius = FIELD_RADAR_RADIUS
 local enabled = false
 local loop_started = false
 local update_pending = false
 local state_path = nil
 local write_error_logged = false
 local engine = nil
+local minimap_layer = nil
+local minimap_scale_elapsed_ms = MINIMAP_SCALE_CHECK_INTERVAL_MS
+local minimap_mode = nil
 
 local function ensure_treasures_loaded()
     if world_treasures ~= nil then
@@ -188,8 +195,74 @@ local function get_player_location()
     return player_x, player_y
 end
 
+local function is_valid_object(object)
+    if object == nil then
+        return false
+    end
+    local ok, valid = pcall(function()
+        return object:IsValid()
+    end)
+    return ok and valid == true
+end
+
+local function read_minimap_scale()
+    if not is_valid_object(minimap_layer) then
+        minimap_layer = FindFirstOf("DLayerMiniMap")
+    end
+    if not is_valid_object(minimap_layer) then
+        minimap_layer = nil
+        return nil
+    end
+
+    local ok, scale = pcall(function()
+        local layer_map = minimap_layer.LayerMap
+        if not is_valid_object(layer_map) then
+            return nil
+        end
+
+        local map_overlay = layer_map.MapOverlay
+        if not is_valid_object(map_overlay) then
+            return nil
+        end
+
+        return tonumber(map_overlay.RenderTransform.Scale.X)
+    end)
+    if not ok or scale == nil then
+        minimap_layer = nil
+        return nil
+    end
+    return scale
+end
+
+local function update_radar_radius()
+    local scale = read_minimap_scale()
+    if scale == nil then
+        return
+    end
+
+    local new_mode
+    local new_radius
+    if scale >= MINIMAP_SCALE_THRESHOLD then
+        new_mode = "town"
+        new_radius = TOWN_RADAR_RADIUS
+    else
+        new_mode = "field"
+        new_radius = FIELD_RADAR_RADIUS
+    end
+
+    radar_radius = new_radius
+    if minimap_mode ~= new_mode then
+        minimap_mode = new_mode
+        log(string.format(
+            "Minimap scale %.3f detected; using %.0f m radar range.",
+            scale,
+            new_radius / 100.0
+        ))
+    end
+end
+
 local function build_radar_json(player_x, player_y)
-    local radius_squared = RADAR_RADIUS * RADAR_RADIUS
+    local radius_squared = radar_radius * radar_radius
     local nearby = {}
 
     for _, treasure in ipairs(world_treasures) do
@@ -214,7 +287,7 @@ local function build_radar_json(player_x, player_y)
     local parts = {
         string.format(
             '{"enabled":true,"radius":%.3f,"points":[',
-            RADAR_RADIUS
+            radar_radius
         ),
     }
     for index = 1, count do
@@ -241,6 +314,13 @@ local function update_radar_state()
     local player_x, player_y = get_player_location()
     if player_x == nil or player_y == nil then
         return
+    end
+
+    minimap_scale_elapsed_ms =
+        minimap_scale_elapsed_ms + UPDATE_INTERVAL_MS
+    if minimap_scale_elapsed_ms >= MINIMAP_SCALE_CHECK_INTERVAL_MS then
+        minimap_scale_elapsed_ms = 0
+        update_radar_radius()
     end
 
     local path = resolve_state_path()
