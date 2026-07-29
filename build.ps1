@@ -3,8 +3,18 @@ $ErrorActionPreference = "Stop"
 $OutputRoot = Join-Path $PSScriptRoot "dist"
 $compiler = Join-Path $env:WINDIR `
     "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-$overlaySource = Join-Path $PSScriptRoot "src\overlay\Program.cs"
-$installerSource = Join-Path $PSScriptRoot "src\installer\Program.cs"
+$overlaySources = Get-ChildItem `
+    -LiteralPath (Join-Path $PSScriptRoot "src\overlay") `
+    -Filter "*.cs" `
+    -Recurse |
+    Sort-Object FullName |
+    Select-Object -ExpandProperty FullName
+$installerSources = Get-ChildItem `
+    -LiteralPath (Join-Path $PSScriptRoot "src\installer") `
+    -Filter "*.cs" `
+    -Recurse |
+    Sort-Object FullName |
+    Select-Object -ExpandProperty FullName
 $luaSource = Join-Path $PSScriptRoot "src\ue4ss"
 $sqlCipher = Join-Path $PSScriptRoot "vendor\e_sqlcipher.dll"
 $ooz = Join-Path $PSScriptRoot "vendor\ooz.exe"
@@ -44,7 +54,7 @@ New-Item -ItemType Directory -Path `
     /reference:System.Drawing.dll `
     /reference:System.Windows.Forms.dll `
     /reference:System.Web.Extensions.dll `
-    $overlaySource
+    $overlaySources
 if ($LASTEXITCODE -ne 0) {
     throw "Overlay compilation failed with exit code $LASTEXITCODE."
 }
@@ -59,7 +69,7 @@ if ($LASTEXITCODE -ne 0) {
     /reference:System.Core.dll `
     /reference:System.Security.dll `
     /reference:System.Windows.Forms.dll `
-    $installerSource
+    $installerSources
 if ($LASTEXITCODE -ne 0) {
     throw "Installer compilation failed with exit code $LASTEXITCODE."
 }
