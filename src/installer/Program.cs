@@ -282,7 +282,7 @@ internal static class Program
                 !argument.StartsWith("--", StringComparison.Ordinal));
             if (selectedPath == null)
             {
-                selectedPath = SelectGameFolder();
+                selectedPath = SelectGameExecutable();
             }
             if (String.IsNullOrWhiteSpace(selectedPath))
             {
@@ -290,6 +290,7 @@ internal static class Program
             }
 
             string gameRoot = ResolveGameRoot(selectedPath);
+            string ue4ssRoot = ResolveUe4ssRoot(gameRoot);
             string applicationRoot = AppDomain.CurrentDomain.BaseDirectory;
             string payloadRoot = Path.Combine(
                 applicationRoot, "payload", ModName);
@@ -298,7 +299,7 @@ internal static class Program
 
             ValidateInstallerFiles(payloadRoot, oozPath);
             int treasureCount = Install(
-                gameRoot, payloadRoot, oozPath);
+                gameRoot, ue4ssRoot, payloadRoot, oozPath);
 
             string successMessage = String.Format(
                 CultureInfo.InvariantCulture,
@@ -307,10 +308,7 @@ internal static class Program
                 "Installed to:\n{1}",
                 treasureCount,
                 Path.Combine(
-                    gameRoot,
-                    "DS",
-                    "Binaries",
-                    "Win64",
+                    ue4ssRoot,
                     "Mods",
                     ModName));
             if (silent)
@@ -345,24 +343,43 @@ internal static class Program
         }
     }
 
-    private static string SelectGameFolder()
+    private static string SelectGameExecutable()
     {
-        using (FolderBrowserDialog dialog = new FolderBrowserDialog())
+        using (OpenFileDialog dialog = new OpenFileDialog())
         {
-            dialog.Description =
-                "Select the DragonSword Awakening game folder.";
-            dialog.ShowNewFolderButton = false;
+            dialog.Title =
+                "Select DSClient-Win64-Shipping.exe";
+            dialog.Filter =
+                "DragonSword game executable " +
+                "(DSClient-Win64-Shipping.exe)|" +
+                "DSClient-Win64-Shipping.exe|" +
+                "Executable files (*.exe)|*.exe";
+            dialog.FileName = "DSClient-Win64-Shipping.exe";
+            dialog.CheckFileExists = true;
+            dialog.CheckPathExists = true;
+            dialog.Multiselect = false;
             return dialog.ShowDialog() == DialogResult.OK
-                ? dialog.SelectedPath
+                ? dialog.FileName
                 : null;
         }
     }
 
     private static string ResolveGameRoot(string selectedPath)
     {
-        DirectoryInfo candidate = new DirectoryInfo(
-            Path.GetFullPath(selectedPath));
-        for (int level = 0; level < 6 && candidate != null; level++)
+        string fullPath = Path.GetFullPath(
+            selectedPath.Trim().Trim('"'));
+        if (File.Exists(fullPath))
+        {
+            fullPath = Path.GetDirectoryName(fullPath);
+        }
+        if (!Directory.Exists(fullPath))
+        {
+            throw new DirectoryNotFoundException(
+                "The selected path does not exist.");
+        }
+
+        DirectoryInfo candidate = new DirectoryInfo(fullPath);
+        for (int level = 0; level < 12 && candidate != null; level++)
         {
             string executable = Path.Combine(
                 candidate.FullName,
@@ -388,6 +405,76 @@ internal static class Program
             "Awakening installation.");
     }
 
+    private static string ResolveUe4ssRoot(string gameRoot)
+    {
+        string win64Root = Path.Combine(
+            gameRoot, "DS", "Binaries", "Win64");
+        List<string> candidates = new List<string>();
+        candidates.Add(Path.Combine(win64Root, "ue4ss"));
+        candidates.Add(win64Root);
+
+        try
+        {
+            candidates.AddRange(
+                Directory.EnumerateDirectories(
+                    win64Root, "*", SearchOption.TopDirectoryOnly));
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+
+        string detected = candidates
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(path => File.Exists(
+                Path.Combine(path, "UE4SS.dll")))
+            .OrderByDescending(path =>
+                ScoreUe4ssRoot(path, win64Root))
+            .ThenBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+        if (detected != null)
+        {
+            return detected;
+        }
+
+        throw new DirectoryNotFoundException(
+            "UE4SS was not found. Install UE4SS before this mod.\n\n" +
+            "The installer checked both supported layouts:\n" +
+            Path.Combine(win64Root, "UE4SS.dll") + "\n" +
+            Path.Combine(win64Root, "ue4ss", "UE4SS.dll"));
+    }
+
+    private static int ScoreUe4ssRoot(
+        string candidate, string win64Root)
+    {
+        int score = 0;
+        string expectedSubfolder = Path.Combine(win64Root, "ue4ss");
+        if (candidate.Equals(
+            expectedSubfolder, StringComparison.OrdinalIgnoreCase))
+        {
+            score += 1000;
+        }
+        if (File.Exists(Path.Combine(
+            candidate, "Mods", "mods.txt")))
+        {
+            score += 200;
+        }
+        if (File.Exists(Path.Combine(
+            candidate, "UE4SS-settings.ini")))
+        {
+            score += 100;
+        }
+        if (Directory.Exists(Path.Combine(candidate, "Mods")))
+        {
+            score += 50;
+        }
+        if (candidate.Equals(
+            win64Root, StringComparison.OrdinalIgnoreCase))
+        {
+            score += 10;
+        }
+        return score;
+    }
+
     private static void ValidateInstallerFiles(
         string payloadRoot, string oozPath)
     {
@@ -404,7 +491,10 @@ internal static class Program
     }
 
     private static int Install(
-        string gameRoot, string payloadRoot, string oozPath)
+        string gameRoot,
+        string ue4ssRoot,
+        string payloadRoot,
+        string oozPath)
     {
         string win64Root = Path.Combine(
             gameRoot, "DS", "Binaries", "Win64");
@@ -416,12 +506,8 @@ internal static class Program
             "Content",
             "Paks",
             "pakchunk109-WindowsClient.pak");
-        string modsRoot = Path.Combine(win64Root, "Mods");
-        if (!Directory.Exists(modsRoot))
-        {
-            throw new DirectoryNotFoundException(
-                "UE4SS was not found. Install UE4SS before this mod.");
-        }
+        string modsRoot = Path.Combine(ue4ssRoot, "Mods");
+        Directory.CreateDirectory(modsRoot);
 
         string temporaryRoot = Path.Combine(
             Path.GetTempPath(),

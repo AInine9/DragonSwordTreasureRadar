@@ -4,40 +4,37 @@ local function log(message)
     print(string.format("%s %s\n", MOD, tostring(message)))
 end
 
+local GENERATION_KEY = "DragonSwordTreasureRadar.Generation"
+local previous_generation =
+    tonumber(ModRef:GetSharedVariable(GENERATION_KEY)) or 0
+local generation = previous_generation + 1
+ModRef:SetSharedVariable(GENERATION_KEY, generation)
+
+local function is_current_generation()
+    local ok, current_generation = pcall(function()
+        return ModRef:GetSharedVariable(GENERATION_KEY)
+    end)
+    return ok and tonumber(current_generation) == generation
+end
+
 local ok_config, config = pcall(require, "config")
 if not ok_config then
     log("config.lua could not be loaded: " .. tostring(config))
     return
 end
 
-local RADAR_RADIUS = 12500.0
+local RADAR_RADIUS = 22500.0
 local MAX_RADAR_POINTS = 80
 local UPDATE_INTERVAL_MS = 250
 local WORLD_MAP_ID = 100
-
-local ok_helpers, UEHelpers = pcall(require, "UEHelpers")
-if not ok_helpers then
-    log("UEHelpers could not be loaded: " .. tostring(UEHelpers))
-    return
-end
 
 local world_treasures = nil
 local enabled = false
 local loop_started = false
 local update_pending = false
-local cached_controller = nil
 local state_path = nil
 local write_error_logged = false
-
-local function is_valid(object)
-    if object == nil then
-        return false
-    end
-    local ok, valid = pcall(function()
-        return object:IsValid()
-    end)
-    return ok and valid == true
-end
+local engine = nil
 
 local function ensure_treasures_loaded()
     if world_treasures ~= nil then
@@ -138,26 +135,57 @@ local function write_disabled_state()
     end
 end
 
-local function get_player_pawn()
-    if is_valid(cached_controller) then
-        local pawn = cached_controller.Pawn
-        if is_valid(pawn) then
-            return pawn
+local function get_player_location()
+    local ok, player_x, player_y = pcall(function()
+        if engine == nil then
+            engine = FindFirstOf("Engine")
         end
-    end
+        if engine == nil then
+            return nil, nil
+        end
 
-    local ok, controller = pcall(UEHelpers.GetPlayerController)
-    if not ok or not is_valid(controller) then
-        cached_controller = nil
-        return nil
-    end
-    cached_controller = controller
+        local viewport = engine.GameViewport
+        if viewport == nil then
+            return nil, nil
+        end
 
-    local pawn = controller.Pawn
-    if is_valid(pawn) then
-        return pawn
+        local game_instance = viewport.GameInstance
+        if game_instance == nil then
+            return nil, nil
+        end
+
+        local local_players = game_instance.LocalPlayers
+        if local_players == nil then
+            return nil, nil
+        end
+
+        local local_player = local_players[1]
+        if local_player == nil then
+            return nil, nil
+        end
+
+        local controller = local_player.PlayerController
+        if controller == nil then
+            return nil, nil
+        end
+
+        local pawn = controller.Pawn
+        if pawn == nil then
+            return nil, nil
+        end
+
+        local location = pawn:K2_GetActorLocation()
+        if location == nil then
+            return nil, nil
+        end
+
+        return tonumber(location.X), tonumber(location.Y)
+    end)
+    if not ok then
+        engine = nil
+        return nil, nil
     end
-    return nil
+    return player_x, player_y
 end
 
 local function build_radar_json(player_x, player_y)
@@ -210,20 +238,7 @@ local function update_radar_state()
         return
     end
 
-    local pawn = get_player_pawn()
-    if not is_valid(pawn) then
-        return
-    end
-
-    local ok, location = pcall(function()
-        return pawn:K2_GetActorLocation()
-    end)
-    if not ok or location == nil then
-        return
-    end
-
-    local player_x = tonumber(location.X)
-    local player_y = tonumber(location.Y)
+    local player_x, player_y = get_player_location()
     if player_x == nil or player_y == nil then
         return
     end
@@ -248,6 +263,20 @@ local function update_radar_state()
     end
 end
 
+local function queue_radar_update()
+    if not is_current_generation() or not enabled or update_pending then
+        return
+    end
+
+    update_pending = true
+    ExecuteInGameThread(function()
+        if is_current_generation() then
+            pcall(update_radar_state)
+        end
+        update_pending = false
+    end)
+end
+
 local function ensure_loop_started()
     if loop_started then
         return
@@ -255,31 +284,34 @@ local function ensure_loop_started()
     loop_started = true
 
     LoopAsync(UPDATE_INTERVAL_MS, function()
-        if enabled and not update_pending then
-            update_pending = true
-            ExecuteInGameThread(function()
-                pcall(update_radar_state)
-                update_pending = false
-            end)
+        if not is_current_generation() then
+            return true
         end
+        queue_radar_update()
         return false
     end)
 end
 
 RegisterKeyBind(Key[config.refresh_key], function()
+    if not is_current_generation() then
+        return
+    end
     if ensure_treasures_loaded() then
         enabled = true
         ensure_loop_started()
-        ExecuteInGameThread(update_radar_state)
         log("External radar enabled.")
+        queue_radar_update()
     end
 end)
 
 RegisterKeyBind(Key[config.toggle_key], function()
+    if not is_current_generation() then
+        return
+    end
     enabled = not enabled
     if enabled and ensure_treasures_loaded() then
         ensure_loop_started()
-        ExecuteInGameThread(update_radar_state)
+        queue_radar_update()
     else
         write_disabled_state()
     end
