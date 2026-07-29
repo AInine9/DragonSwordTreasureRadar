@@ -17,6 +17,7 @@ namespace DragonSwordTreasureRadar
         [STAThread]
         private static void Main()
         {
+            DpiAwareness.Enable();
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += delegate(object sender, System.Threading.ThreadExceptionEventArgs e)
             {
@@ -44,6 +45,67 @@ namespace DragonSwordTreasureRadar
                 );
             }
         }
+    }
+
+    internal static class DpiAwareness
+    {
+        private static readonly IntPtr PerMonitorAwareV2 =
+            new IntPtr(-4);
+
+        public static void Enable()
+        {
+            try
+            {
+                if (SetProcessDpiAwarenessContext(PerMonitorAwareV2))
+                {
+                    return;
+                }
+            }
+            catch (EntryPointNotFoundException)
+            {
+            }
+            catch (DllNotFoundException)
+            {
+            }
+
+            try
+            {
+                const int ProcessPerMonitorDpiAware = 2;
+                if (SetProcessDpiAwareness(
+                    ProcessPerMonitorDpiAware) == 0)
+                {
+                    return;
+                }
+            }
+            catch (EntryPointNotFoundException)
+            {
+            }
+            catch (DllNotFoundException)
+            {
+            }
+
+            try
+            {
+                SetProcessDPIAware();
+            }
+            catch (EntryPointNotFoundException)
+            {
+            }
+            catch (DllNotFoundException)
+            {
+            }
+        }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetProcessDpiAwarenessContext(
+            IntPtr dpiContext);
+
+        [DllImport("shcore.dll")]
+        private static extern int SetProcessDpiAwareness(
+            int awareness);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetProcessDPIAware();
     }
 
     internal static class ErrorLog
@@ -323,6 +385,10 @@ namespace DragonSwordTreasureRadar
                         {
                             int configuredHeight =
                                 GetConfiguredWindowHeight(process);
+                            int geometryHeight =
+                                configuredHeight > 0
+                                    ? configuredHeight
+                                    : rectangle.Bottom - rectangle.Top;
                             if (_configuredFullscreenMode == 2)
                             {
                                 Rect clientRectangle;
@@ -331,11 +397,18 @@ namespace DragonSwordTreasureRadar
                                     out clientRectangle))
                                 {
                                     rectangle = clientRectangle;
+                                    // In windowed mode, Win32 returns client
+                                    // coordinates in this process's DPI
+                                    // coordinate space. ResolutionSizeY is
+                                    // stored in the game's physical pixels.
+                                    // Mixing the two makes the overlay about
+                                    // twice as large at 200% display scaling.
+                                    geometryHeight =
+                                        clientRectangle.Bottom
+                                        - clientRectangle.Top;
                                 }
                             }
-                            UpdateGeometry(configuredHeight > 0
-                                ? configuredHeight
-                                : rectangle.Bottom - rectangle.Top);
+                            UpdateGeometry(geometryHeight);
                             targetX = rectangle.Right
                                 - _overlaySize
                                 - ScalePixels(ReferenceRightMargin);
