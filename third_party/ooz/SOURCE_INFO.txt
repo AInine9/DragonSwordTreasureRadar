@@ -1,0 +1,14 @@
+ooz
+Copyright (C) 2016 Powzix
+Source: https://github.com/powzix/ooz
+Commit: 05038060aa68f9187ae9923b2388ca8db40e58d1
+License: GNU General Public License version 3 or later
+
+The source files in this directory are the complete corresponding source for
+the unmodified ooz.exe included in release archives.
+
+The release binary is built for Windows x64 with llvm-mingw:
+
+clang++ -O2 -static -std=c++14 -Wno-writable-strings -Wno-format \
+  -include sys/stat.h kraken.cpp bitknit.cpp lzna.cpp stdafx.cpp \
+  -o ooz.exe

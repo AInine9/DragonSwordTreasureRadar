@@ -1,0 +1,33 @@
+# Build outputs and downloaded dependencies
+/dist/
+/vendor/
+*.exe
+*.dll
+*.pdb
+*.zip
+
+# Game-derived data (generated locally)
+/src/ue4ss/treasures.lua
+SectionTreasureBoxData.xml
+*.pak
+*.utoc
+*.ucas
+
+# Game saves and runtime state
+*.db
+*.db-*
+*.bak
+*.sav
+radar_state.json
+collected_uids.txt
+DragonSwordTreasureRadar.log
+UE4SS.log
+
+# IDE and OS files
+/.vs/
+/.idea/
+**/bin/
+**/obj/
+.DS_Store
+Thumbs.db
+desktop.ini

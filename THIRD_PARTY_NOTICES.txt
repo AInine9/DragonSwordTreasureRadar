@@ -1,0 +1,28 @@
+THIRD-PARTY NOTICES
+
+SQLitePCLRaw.lib.e_sqlcipher 2.1.10
+Copyright 2014-2024 SourceGear, LLC
+Licensed under the Apache License, Version 2.0.
+https://github.com/ericsink/SQLitePCL.raw
+
+The included e_sqlcipher.dll is an unofficial and unsupported SQLCipher build
+distributed by the SQLitePCLRaw.lib.e_sqlcipher package. For official
+SQLCipher builds, contact Zetetic.
+
+The full Apache License, Version 2.0 is included in
+LICENSE-APACHE-2.0.txt.
+
+SQLCipher Community Edition
+Copyright (c) 2008-2026, ZETETIC, LLC
+Licensed under the SQLCipher Community Edition BSD-style license.
+https://www.zetetic.net/sqlcipher/
+
+The full SQLCipher license is included in LICENSE-SQLCIPHER.txt.
+
+ooz
+Copyright (C) 2016 Powzix
+Licensed under the GNU General Public License, version 3 or later.
+https://github.com/powzix/ooz
+
+The full GPL license is included in LICENSE-GPL-3.0.txt. The complete
+corresponding source used to build ooz.exe is included in source\ooz.
