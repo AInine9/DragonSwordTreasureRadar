@@ -7,9 +7,6 @@ using System.Xml;
 
 internal static class TreasureLuaGenerator
 {
-    private const string XmlNamespace =
-        "http://leigient.549n.com/schema/SectionActorInfo";
-
     public static int Generate(
         string xmlPath,
         string outputPath)
@@ -39,15 +36,12 @@ internal static class TreasureLuaGenerator
                 continue;
             }
 
-            string cid =
-                element.GetAttribute("CID", XmlNamespace);
-            string section = element.GetAttribute(
-                "SectionUID",
-                XmlNamespace);
-            string x =
-                element.GetAttribute("PosX", XmlNamespace);
-            string y =
-                element.GetAttribute("PosY", XmlNamespace);
+            string cid = GetRequiredAttribute(element, "CID");
+            string section = GetRequiredAttribute(
+                element,
+                "SectionUID");
+            string x = GetRequiredAttribute(element, "PosX");
+            string y = GetRequiredAttribute(element, "PosY");
             ValidateInteger(cid, "CID");
             ValidateInteger(section, "SectionUID");
             ValidateNumber(x, "PosX");
@@ -67,6 +61,27 @@ internal static class TreasureLuaGenerator
             lines,
             new UTF8Encoding(false));
         return nodes.Count;
+    }
+
+    private static string GetRequiredAttribute(
+        XmlElement element,
+        string localName)
+    {
+        foreach (XmlAttribute attribute in element.Attributes)
+        {
+            if (string.Equals(
+                attribute.LocalName,
+                localName,
+                StringComparison.Ordinal))
+            {
+                return attribute.Value;
+            }
+        }
+
+        throw new InvalidDataException(
+            "The extracted treasure data is missing attribute '" +
+            localName +
+            "'.");
     }
 
     private static void ValidateInteger(
