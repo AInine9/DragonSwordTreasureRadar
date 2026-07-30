@@ -35,6 +35,7 @@ namespace DragonSwordTreasureRadar
         private string _lastGeometryLog;
         private string _lastSaveFilterLog;
         private DateTime _nextSaveFilterLogUtc;
+        private int _lastSaveStateVersion = -1;
 
         public RadarForm()
         {
@@ -61,7 +62,7 @@ namespace DragonSwordTreasureRadar
 
             _timer = new Timer
             {
-                Interval = 100
+                Interval = 250
             };
             _timer.Tick += OnTimerTick;
             _timer.Start();
@@ -217,13 +218,22 @@ namespace DragonSwordTreasureRadar
         {
             MoveOverGameWindow();
             _saveState.Refresh();
+            bool redraw =
+                UpdateSaveStateVersion();
 
             try
             {
                 if (!File.Exists(_statePath))
                 {
-                    _state = null;
-                    Invalidate();
+                    if (_state != null)
+                    {
+                        _state = null;
+                        redraw = true;
+                    }
+                    if (redraw)
+                    {
+                        Invalidate();
+                    }
                     LogSaveFilterStatus();
                     return;
                 }
@@ -235,8 +245,12 @@ namespace DragonSwordTreasureRadar
                     _lastStateWriteUtc = writeTime;
                     _state = _serializer.Deserialize<RadarState>(
                         File.ReadAllText(_statePath));
+                    redraw = true;
                 }
-                Invalidate();
+                if (redraw)
+                {
+                    Invalidate();
+                }
             }
             catch (IOException)
             {
@@ -254,6 +268,18 @@ namespace DragonSwordTreasureRadar
             }
 
             LogSaveFilterStatus();
+        }
+
+        private bool UpdateSaveStateVersion()
+        {
+            int version = _saveState.Version;
+            if (version == _lastSaveStateVersion)
+            {
+                return false;
+            }
+
+            _lastSaveStateVersion = version;
+            return true;
         }
 
         private void LogSaveFilterStatus()

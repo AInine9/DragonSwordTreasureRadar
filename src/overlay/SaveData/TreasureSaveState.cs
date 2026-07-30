@@ -6,24 +6,29 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 
 namespace DragonSwordTreasureRadar
 {
     internal sealed class TreasureSaveState
     {
-        private const ulong SaveDatabaseOwnerPointerRva =
-            0x94DDB20;
-        private const uint ProcessReadAccess =
-            0x0010 | 0x1000;
         private const int SqliteOpenReadOnly = 0x00000001;
 
         private static readonly TimeSpan RefreshInterval =
             TimeSpan.FromMilliseconds(250);
+        private static readonly TimeSpan DatabaseDiscoveryInterval =
+            TimeSpan.FromSeconds(5);
 
+        private readonly object _sync = new object();
         private readonly Dictionary<int, ulong> _opened =
             new Dictionary<int, ulong>();
+        private readonly SaveDatabaseKeyReader _keyReader =
+            new SaveDatabaseKeyReader();
 
         private DateTime _nextRefreshUtc;
+        private DateTime _nextDatabaseDiscoveryUtc;
+        private string _selectedDatabasePath;
+        private string _databaseCandidateSummary;
         private string _lastDatabasePath;
         private DateTime _lastDatabaseWriteUtc;
         private string _lastKey;
@@ -31,7 +36,9 @@ namespace DragonSwordTreasureRadar
         private string _lastDatabaseAttemptLog;
         private string _lastDatabaseSuccessLog;
         private int _gameProcessId;
+        private int _version;
         private bool _hasLoadedSaveState;
+        private bool _loadInProgress;
 
         public int GameProcessId
         {
@@ -40,27 +47,59 @@ namespace DragonSwordTreasureRadar
 
         public bool HasLoadedSaveState
         {
-            get { return _hasLoadedSaveState; }
+            get
+            {
+                lock (_sync)
+                {
+                    return _hasLoadedSaveState;
+                }
+            }
+        }
+
+        public int Version
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _version;
+                }
+            }
         }
 
         public string DatabaseName
         {
             get
             {
-                return _lastDatabasePath == null
-                    ? "none"
-                    : SafeSlotName(_lastDatabasePath);
+                lock (_sync)
+                {
+                    return _lastDatabasePath == null
+                        ? "none"
+                        : SafeSlotName(_lastDatabasePath);
+                }
             }
         }
 
         public int OpenedBitCount
         {
-            get { return CountOpenedBits(_opened); }
+            get
+            {
+                lock (_sync)
+                {
+                    return CountOpenedBits(_opened);
+                }
+            }
         }
 
         public string LastErrorSummary
         {
-            get { return _lastError ?? "none"; }
+            get
+            {
+                lock (_sync)
+                {
+                    return _lastError ?? "none";
+                }
+            }
         }
 
         public bool IsOpened(long saveId)
@@ -72,9 +111,12 @@ namespace DragonSwordTreasureRadar
 
             int category = (int)(saveId / 64);
             int bit = (int)(saveId % 64);
-            ulong field;
-            return _opened.TryGetValue(category, out field)
-                && (field & (1UL << bit)) != 0;
+            lock (_sync)
+            {
+                ulong field;
+                return _opened.TryGetValue(category, out field)
+                    && (field & (1UL << bit)) != 0;
+            }
         }
 
         public void Refresh()
@@ -113,9 +155,9 @@ namespace DragonSwordTreasureRadar
 
         private void RefreshFromGame(Process game)
         {
-            string key = ReadDatabaseKey(game);
+            string key = _keyReader.Read(game);
             string candidateSummary;
-            string databasePath = FindNewestSaveDatabase(
+            string databasePath = FindNewestSaveDatabaseCached(
                 game,
                 out candidateSummary);
             LogDatabaseSelection(
@@ -124,31 +166,95 @@ namespace DragonSwordTreasureRadar
 
             DateTime writeTime =
                 File.GetLastWriteTimeUtc(databasePath);
-            if (databasePath == _lastDatabasePath
-                && writeTime == _lastDatabaseWriteUtc
-                && key == _lastKey)
+            lock (_sync)
             {
-                return;
+                if (databasePath == _lastDatabasePath
+                    && writeTime == _lastDatabaseWriteUtc
+                    && key == _lastKey)
+                {
+                    return;
+                }
+                if (_loadInProgress)
+                {
+                    return;
+                }
+                _loadInProgress = true;
             }
 
-            Dictionary<int, ulong> opened =
-                ReadOpenedTreasureBits(databasePath, key);
-            ReplaceOpenedState(opened);
-            _lastDatabasePath = databasePath;
-            _lastDatabaseWriteUtc = writeTime;
-            _lastKey = key;
-            _lastError = null;
-            _hasLoadedSaveState = true;
-            LogDatabaseLoaded(databasePath, opened);
+            SaveLoadRequest request = new SaveLoadRequest
+            {
+                GameProcessId = game.Id,
+                DatabasePath = databasePath,
+                DatabaseWriteUtc = writeTime,
+                Key = key,
+            };
+            if (!ThreadPool.QueueUserWorkItem(
+                    LoadSaveState,
+                    request))
+            {
+                lock (_sync)
+                {
+                    _loadInProgress = false;
+                }
+                throw new InvalidOperationException(
+                    "Could not queue save-state refresh.");
+            }
         }
 
-        private void ReplaceOpenedState(
-            Dictionary<int, ulong> opened)
+        private void LoadSaveState(object state)
         {
-            _opened.Clear();
-            foreach (KeyValuePair<int, ulong> pair in opened)
+            SaveLoadRequest request =
+                (SaveLoadRequest)state;
+            try
             {
-                _opened[pair.Key] = pair.Value;
+                Dictionary<int, ulong> opened =
+                    ReadOpenedTreasureBits(
+                        request.DatabasePath,
+                        request.Key);
+                lock (_sync)
+                {
+                    if (_gameProcessId !=
+                        request.GameProcessId)
+                    {
+                        return;
+                    }
+
+                    _opened.Clear();
+                    foreach (KeyValuePair<int, ulong> pair
+                        in opened)
+                    {
+                        _opened[pair.Key] = pair.Value;
+                    }
+                    _lastDatabasePath =
+                        request.DatabasePath;
+                    _lastDatabaseWriteUtc =
+                        request.DatabaseWriteUtc;
+                    _lastKey = request.Key;
+                    _lastError = null;
+                    _hasLoadedSaveState = true;
+                    _version++;
+                    LogDatabaseLoaded(
+                        request.DatabasePath,
+                        opened);
+                }
+            }
+            catch (Exception exception)
+            {
+                lock (_sync)
+                {
+                    if (_gameProcessId ==
+                        request.GameProcessId)
+                    {
+                        LogRefreshError(exception);
+                    }
+                }
+            }
+            finally
+            {
+                lock (_sync)
+                {
+                    _loadInProgress = false;
+                }
             }
         }
 
@@ -198,12 +304,15 @@ namespace DragonSwordTreasureRadar
             string message =
                 exception.GetType().FullName + ": " +
                 exception.Message;
-            if (message != _lastError)
+            lock (_sync)
             {
-                _lastError = message;
-                ErrorLog.Write(
-                    "Save-state refresh failed",
-                    exception);
+                if (message != _lastError)
+                {
+                    _lastError = message;
+                    ErrorLog.Write(
+                        "Save-state refresh failed",
+                        exception);
+                }
             }
         }
 
@@ -214,77 +323,50 @@ namespace DragonSwordTreasureRadar
                 return;
             }
 
-            _gameProcessId = processId;
-            _opened.Clear();
-            _lastDatabasePath = null;
-            _lastDatabaseWriteUtc = DateTime.MinValue;
-            _lastKey = null;
-            _lastError = null;
-            _lastDatabaseAttemptLog = null;
-            _lastDatabaseSuccessLog = null;
-            _hasLoadedSaveState = false;
+            lock (_sync)
+            {
+                _gameProcessId = processId;
+                _opened.Clear();
+                _nextDatabaseDiscoveryUtc =
+                    DateTime.MinValue;
+                _selectedDatabasePath = null;
+                _databaseCandidateSummary = null;
+                _lastDatabasePath = null;
+                _lastDatabaseWriteUtc = DateTime.MinValue;
+                _lastKey = null;
+                _lastError = null;
+                _lastDatabaseAttemptLog = null;
+                _lastDatabaseSuccessLog = null;
+                _hasLoadedSaveState = false;
+                _loadInProgress = false;
+                _version++;
+            }
+            _keyReader.Reset();
         }
 
-        private static string ReadDatabaseKey(Process game)
+        private string FindNewestSaveDatabaseCached(
+            Process game,
+            out string candidateSummary)
         {
-            IntPtr process = NativeMethods.OpenProcess(
-                ProcessReadAccess,
-                false,
-                game.Id);
-            if (process == IntPtr.Zero)
+            if (_selectedDatabasePath != null
+                && File.Exists(_selectedDatabasePath)
+                && DateTime.UtcNow <
+                    _nextDatabaseDiscoveryUtc)
             {
-                throw new InvalidOperationException(
-                    "OpenProcess failed: " +
-                    Marshal.GetLastWin32Error());
+                candidateSummary =
+                    _databaseCandidateSummary;
+                return _selectedDatabasePath;
             }
 
-            try
-            {
-                ulong moduleBase = unchecked(
-                    (ulong)game.MainModule.BaseAddress.ToInt64());
-                ulong owner = ReadUInt64(
-                    process,
-                    moduleBase +
-                        SaveDatabaseOwnerPointerRva);
-                if (owner == 0)
-                {
-                    throw new InvalidOperationException(
-                        "Save database owner is not ready.");
-                }
-
-                ulong keyPointer =
-                    ReadUInt64(process, owner + 0x120);
-                int keyLength =
-                    ReadInt32(process, owner + 0x128);
-                if (keyPointer == 0
-                    || keyLength <= 1
-                    || keyLength > 256)
-                {
-                    throw new InvalidOperationException(
-                        "Save database key is not ready.");
-                }
-
-                byte[] bytes = ReadBytes(
-                    process,
-                    keyPointer,
-                    keyLength * 2);
-                string key = Encoding.Unicode
-                    .GetString(bytes)
-                    .TrimEnd('\0');
-                if (key.Length == 0
-                    || key.Any(character =>
-                        character < 0x20
-                        || character > 0x7E))
-                {
-                    throw new InvalidOperationException(
-                        "Save database key is not ready.");
-                }
-                return key;
-            }
-            finally
-            {
-                NativeMethods.CloseHandle(process);
-            }
+            _selectedDatabasePath =
+                FindNewestSaveDatabase(
+                    game,
+                    out _databaseCandidateSummary);
+            _nextDatabaseDiscoveryUtc =
+                DateTime.UtcNow.Add(
+                    DatabaseDiscoveryInterval);
+            candidateSummary = _databaseCandidateSummary;
+            return _selectedDatabasePath;
         }
 
         private static string FindNewestSaveDatabase(
@@ -599,45 +681,13 @@ namespace DragonSwordTreasureRadar
                     string.Empty;
         }
 
-        private static ulong ReadUInt64(
-            IntPtr process,
-            ulong address)
+        private sealed class SaveLoadRequest
         {
-            return BitConverter.ToUInt64(
-                ReadBytes(process, address, 8),
-                0);
+            public int GameProcessId;
+            public string DatabasePath;
+            public DateTime DatabaseWriteUtc;
+            public string Key;
         }
 
-        private static int ReadInt32(
-            IntPtr process,
-            ulong address)
-        {
-            return BitConverter.ToInt32(
-                ReadBytes(process, address, 4),
-                0);
-        }
-
-        private static byte[] ReadBytes(
-            IntPtr process,
-            ulong address,
-            int size)
-        {
-            byte[] bytes = new byte[size];
-            IntPtr read;
-            if (!NativeMethods.ReadProcessMemory(
-                    process,
-                    new IntPtr(unchecked((long)address)),
-                    bytes,
-                    new IntPtr(size),
-                    out read)
-                || read.ToInt64() != size)
-            {
-                throw new InvalidOperationException(
-                    "ReadProcessMemory failed at 0x" +
-                    address.ToString("X") + ": " +
-                    Marshal.GetLastWin32Error());
-            }
-            return bytes;
-        }
     }
 }

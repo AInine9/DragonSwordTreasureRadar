@@ -30,8 +30,10 @@ local MINIMAP_SCALE_CHECK_INTERVAL_MS = 1000
 local MAX_RADAR_POINTS = 80
 local UPDATE_INTERVAL_MS = 250
 local WORLD_MAP_ID = 100
+local TREASURE_GRID_CELL_SIZE = FIELD_RADAR_RADIUS
 
 local world_treasures = nil
+local treasure_grid = nil
 local radar_radius = FIELD_RADAR_RADIUS
 local enabled = false
 local loop_started = false
@@ -55,6 +57,7 @@ local function ensure_treasures_loaded()
     end
 
     world_treasures = {}
+    treasure_grid = {}
     for _, treasure in ipairs(data) do
         local map_id = tonumber(string.sub(tostring(treasure.section), -3))
         local x = tonumber(treasure.x)
@@ -65,11 +68,22 @@ local function ensure_treasures_loaded()
             and y ~= nil
             and save_id ~= nil
         then
-            table.insert(world_treasures, {
+            local point = {
                 save_id = save_id,
                 x = x,
                 y = y,
-            })
+            }
+            table.insert(world_treasures, point)
+
+            local cell_x = math.floor(x / TREASURE_GRID_CELL_SIZE)
+            local cell_y = math.floor(y / TREASURE_GRID_CELL_SIZE)
+            local cell_key = tostring(cell_x) .. ":" .. tostring(cell_y)
+            local cell = treasure_grid[cell_key]
+            if cell == nil then
+                cell = {}
+                treasure_grid[cell_key] = cell
+            end
+            table.insert(cell, point)
         end
     end
 
@@ -264,18 +278,36 @@ end
 local function build_radar_json(player_x, player_y)
     local radius_squared = radar_radius * radar_radius
     local nearby = {}
+    local center_cell_x =
+        math.floor(player_x / TREASURE_GRID_CELL_SIZE)
+    local center_cell_y =
+        math.floor(player_y / TREASURE_GRID_CELL_SIZE)
+    local cell_range =
+        math.ceil(radar_radius / TREASURE_GRID_CELL_SIZE)
 
-    for _, treasure in ipairs(world_treasures) do
-        local delta_x = treasure.x - player_x
-        local delta_y = treasure.y - player_y
-        local distance_squared = delta_x * delta_x + delta_y * delta_y
-        if distance_squared <= radius_squared then
-            table.insert(nearby, {
-                save_id = treasure.save_id,
-                dx = delta_x,
-                dy = delta_y,
-                distance_squared = distance_squared,
-            })
+    for offset_x = -cell_range, cell_range do
+        for offset_y = -cell_range, cell_range do
+            local cell_key =
+                tostring(center_cell_x + offset_x)
+                .. ":"
+                .. tostring(center_cell_y + offset_y)
+            local cell = treasure_grid[cell_key]
+            if cell ~= nil then
+                for _, treasure in ipairs(cell) do
+                    local delta_x = treasure.x - player_x
+                    local delta_y = treasure.y - player_y
+                    local distance_squared =
+                        delta_x * delta_x + delta_y * delta_y
+                    if distance_squared <= radius_squared then
+                        table.insert(nearby, {
+                            save_id = treasure.save_id,
+                            dx = delta_x,
+                            dy = delta_y,
+                            distance_squared = distance_squared,
+                        })
+                    end
+                end
+            end
         end
     end
 
