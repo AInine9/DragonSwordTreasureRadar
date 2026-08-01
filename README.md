@@ -32,3 +32,8 @@ Third-party components and their licenses are documented in
 
 This is an unofficial project provided without warranty. It is not affiliated
 with or endorsed by HOUND13 or the game's publishers.
+
+## Link
+https://www.nexusmods.com/dragonswordawakening/mods/63
+I have not shared the GitHub URL anywhere other than Nexus Mods.
+If you see it posted on any other site, please be aware that it was not shared by me.
