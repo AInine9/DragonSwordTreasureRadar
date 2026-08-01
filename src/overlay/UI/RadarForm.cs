@@ -27,15 +27,26 @@ namespace DragonSwordTreasureRadar
         private readonly NotifyIcon _trayIcon;
         private readonly ContextMenuStrip _trayMenu;
         private readonly TreasureSaveState _saveState;
+        private readonly WorldTreasureCatalog _worldTreasures;
+        private List<WorldTreasure> _visibleWorldTreasures =
+            new List<WorldTreasure>();
 
         private RadarState _state;
         private DateTime _lastStateWriteUtc;
+        private DateTime _stateMissingSinceUtc;
+        private DateTime _stateAccessFailureSinceUtc;
+        private DateTime _nextStateAccessFailureLogUtc;
         private float _displayScale = 1f;
         private int _overlaySize = ReferenceOverlaySize;
         private string _lastGeometryLog;
         private string _lastSaveFilterLog;
         private DateTime _nextSaveFilterLogUtc;
+        private DateTime _nextMaintenanceUtc;
         private int _lastSaveStateVersion = -1;
+        private int _lastWorldTreasureCatalogVersion = -1;
+        private int _lastWorldTreasureSaveVersion = -1;
+        private int _gameProcessId;
+        private bool _overlayVisible = true;
 
         public RadarForm()
         {
@@ -44,6 +55,7 @@ namespace DragonSwordTreasureRadar
                 "radar_state.json");
             _serializer = new JavaScriptSerializer();
             _saveState = new TreasureSaveState();
+            _worldTreasures = new WorldTreasureCatalog();
 
             Rectangle primaryBounds = Screen.PrimaryScreen.Bounds;
             UpdateGeometry(
@@ -81,7 +93,8 @@ namespace DragonSwordTreasureRadar
                 parameters.ExStyle |=
                     NativeMethods.WsExTransparent |
                     NativeMethods.WsExToolWindow |
-                    NativeMethods.WsExLayered;
+                    NativeMethods.WsExLayered |
+                    NativeMethods.WsExNoActivate;
                 return parameters;
             }
         }
@@ -104,14 +117,27 @@ namespace DragonSwordTreasureRadar
 
             RadarState state = _state;
             if (state == null
-                || !state.enabled
-                || state.radius <= 0)
+                || !state.enabled)
             {
                 return;
             }
 
             eventArgs.Graphics.SmoothingMode =
                 SmoothingMode.AntiAlias;
+            if (string.Equals(
+                state.mode,
+                "world",
+                StringComparison.Ordinal)
+                && state.worldMap != null)
+            {
+                DrawWorldMap(eventArgs.Graphics, state.worldMap);
+                return;
+            }
+            if (state.radius <= 0)
+            {
+                return;
+            }
+
             float center = _overlaySize / 2f;
             float radarRadius =
                 ReferenceRadarRadius * _displayScale;
@@ -132,6 +158,85 @@ namespace DragonSwordTreasureRadar
                     center,
                     index == 0);
             }
+        }
+
+        private void DrawWorldMap(
+            Graphics graphics,
+            WorldMapState map)
+        {
+            if (!_saveState.HasLoadedSaveState
+                || map.dimensions <= 0
+                || map.uiSize <= 0
+                || map.zoom <= 0
+                || map.viewportWidth <= 0
+                || map.viewportHeight <= 0
+                || map.viewportScale <= 0)
+            {
+                return;
+            }
+
+            float windowScaleX =
+                ClientSize.Width / (float)map.viewportWidth;
+            float windowScaleY =
+                ClientSize.Height / (float)map.viewportHeight;
+            float coordinateScale = (float)map.viewportScale;
+            float diameter = Math.Max(6f, 10f * _displayScale);
+            float half = diameter / 2f;
+            RectangleF clip = new RectangleF(
+                0,
+                0,
+                ClientSize.Width,
+                ClientSize.Height);
+            GraphicsState saved = graphics.Save();
+            graphics.SetClip(clip);
+
+            using (Brush brush = new SolidBrush(
+                Color.FromArgb(235, 90, 235, 255)))
+            using (Pen outline = new Pen(
+                Color.FromArgb(235, 5, 12, 22),
+                Math.Max(1f, 2f * _displayScale)))
+            {
+                foreach (WorldTreasure treasure
+                    in _visibleWorldTreasures)
+                {
+                    if (treasure.MapId != map.mapId)
+                    {
+                        continue;
+                    }
+
+                    double localX = map.playerMapX
+                        + (treasure.X - map.playerWorldX)
+                        / map.dimensions * map.uiSize;
+                    double localY = map.playerMapY
+                        + (treasure.Y - map.playerWorldY)
+                        / map.dimensions * map.uiSize;
+                    float x = (float)(
+                        (map.left + localX * map.zoom)
+                        * coordinateScale * windowScaleX);
+                    float y = (float)(
+                        (map.top + localY * map.zoom)
+                        * coordinateScale * windowScaleY);
+                    if (x < -half || x > ClientSize.Width + half
+                        || y < -half || y > ClientSize.Height + half)
+                    {
+                        continue;
+                    }
+
+                    graphics.FillEllipse(
+                        brush,
+                        x - half,
+                        y - half,
+                        diameter,
+                        diameter);
+                    graphics.DrawEllipse(
+                        outline,
+                        x - half,
+                        y - half,
+                        diameter,
+                        diameter);
+                }
+            }
+            graphics.Restore(saved);
         }
 
         private void ConfigureWindow()
@@ -167,6 +272,7 @@ namespace DragonSwordTreasureRadar
             try
             {
                 RefreshState();
+                UpdateForegroundVisibility();
             }
             catch (Exception exception)
             {
@@ -216,39 +322,72 @@ namespace DragonSwordTreasureRadar
 
         private void RefreshState()
         {
-            MoveOverGameWindow();
-            _saveState.Refresh();
-            bool redraw =
-                UpdateSaveStateVersion();
+            DateTime now = DateTime.UtcNow;
+            bool maintenance = now >= _nextMaintenanceUtc;
+            bool redraw = false;
+            bool geometryChanged = false;
+            if (maintenance)
+            {
+                _nextMaintenanceUtc = now.AddMilliseconds(250);
+                _saveState.Refresh();
+                _worldTreasures.Refresh();
+                redraw = UpdateSaveStateVersion();
+                redraw = UpdateWorldTreasureFilter() || redraw;
+            }
 
             try
             {
                 if (!File.Exists(_statePath))
                 {
-                    if (_state != null)
+                    if (_stateMissingSinceUtc == DateTime.MinValue)
                     {
-                        _state = null;
-                        redraw = true;
+                        _stateMissingSinceUtc = now;
                     }
-                    if (redraw)
+                    if (_state != null
+                        && now - _stateMissingSinceUtc
+                            >= TimeSpan.FromSeconds(1))
                     {
+                        bool wasWorldMap = IsWorldMapMode();
+                        _state = null;
+                        _timer.Interval = 250;
+                        if (wasWorldMap)
+                        {
+                            MoveOverGameWindow();
+                        }
                         Invalidate();
                     }
-                    LogSaveFilterStatus();
+                    if (maintenance)
+                    {
+                        LogSaveFilterStatus();
+                    }
                     return;
                 }
+                _stateMissingSinceUtc = DateTime.MinValue;
 
                 DateTime writeTime =
                     File.GetLastWriteTimeUtc(_statePath);
                 if (writeTime != _lastStateWriteUtc)
                 {
-                    _lastStateWriteUtc = writeTime;
-                    _state = _serializer.Deserialize<RadarState>(
+                    bool wasWorldMap = IsWorldMapMode();
+                    RadarState loadedState =
+                        _serializer.Deserialize<RadarState>(
                         File.ReadAllText(_statePath));
+                    _state = loadedState;
+                    _lastStateWriteUtc = writeTime;
+                    _stateAccessFailureSinceUtc = DateTime.MinValue;
+                    _timer.Interval = IsWorldMapMode()
+                        ? 16
+                        : 250;
+                    geometryChanged =
+                        wasWorldMap != IsWorldMapMode();
                     redraw = true;
                 }
                 if (redraw)
                 {
+                    if (geometryChanged)
+                    {
+                        MoveOverGameWindow();
+                    }
                     Invalidate();
                 }
             }
@@ -262,12 +401,27 @@ namespace DragonSwordTreasureRadar
             }
             catch (UnauthorizedAccessException exception)
             {
-                ErrorLog.Write(
-                    "Cannot read radar_state.json",
-                    exception);
+                if (_stateAccessFailureSinceUtc == DateTime.MinValue)
+                {
+                    _stateAccessFailureSinceUtc = now;
+                }
+                if (now - _stateAccessFailureSinceUtc
+                        >= TimeSpan.FromSeconds(2)
+                    && now >= _nextStateAccessFailureLogUtc)
+                {
+                    _nextStateAccessFailureLogUtc =
+                        now.AddSeconds(30);
+                    ErrorLog.Write(
+                        "Cannot read radar_state.json",
+                        exception);
+                }
             }
 
-            LogSaveFilterStatus();
+            if (maintenance)
+            {
+                MoveOverGameWindow();
+                LogSaveFilterStatus();
+            }
         }
 
         private bool UpdateSaveStateVersion()
@@ -279,6 +433,32 @@ namespace DragonSwordTreasureRadar
             }
 
             _lastSaveStateVersion = version;
+            return true;
+        }
+
+        private bool UpdateWorldTreasureFilter()
+        {
+            int catalogVersion = _worldTreasures.Version;
+            int saveVersion = _saveState.Version;
+            if (catalogVersion == _lastWorldTreasureCatalogVersion
+                && saveVersion == _lastWorldTreasureSaveVersion)
+            {
+                return false;
+            }
+
+            _lastWorldTreasureCatalogVersion = catalogVersion;
+            _lastWorldTreasureSaveVersion = saveVersion;
+            if (!_saveState.HasLoadedSaveState)
+            {
+                _visibleWorldTreasures =
+                    new List<WorldTreasure>();
+                return true;
+            }
+
+            _visibleWorldTreasures = _worldTreasures.Points
+                .Where(treasure =>
+                    !_saveState.IsOpened(treasure.SaveId))
+                .ToList();
             return true;
         }
 
@@ -335,10 +515,13 @@ namespace DragonSwordTreasureRadar
                 - ScalePixels(ReferenceRightMargin);
             int targetY = workingArea.Top
                 + ScalePixels(ReferenceTopMargin);
+            int targetWidth = _overlaySize;
+            int targetHeight = _overlaySize;
             IntPtr gameWindow = IntPtr.Zero;
             NativeRect gameRectangle = new NativeRect();
             bool hasGameRectangle = false;
             bool usedClientRectangle = false;
+            _gameProcessId = 0;
 
             try
             {
@@ -347,6 +530,7 @@ namespace DragonSwordTreasureRadar
                 {
                     if (process != null)
                     {
+                        _gameProcessId = process.Id;
                         process.Refresh();
                         gameWindow = process.MainWindowHandle;
                         if (gameWindow == IntPtr.Zero)
@@ -382,6 +566,13 @@ namespace DragonSwordTreasureRadar
                             targetY = rectangle.Top
                                 + ScalePixels(
                                     ReferenceTopMargin);
+                            if (IsWorldMapMode())
+                            {
+                                targetX = rectangle.Left;
+                                targetY = rectangle.Top;
+                                targetWidth = rectangle.Width;
+                                targetHeight = rectangle.Height;
+                            }
                         }
                     }
                 }
@@ -394,7 +585,19 @@ namespace DragonSwordTreasureRadar
                     exception);
             }
 
-            PositionOverlay(targetX, targetY);
+            if (IsWorldMapMode() && !hasGameRectangle)
+            {
+                targetX = primaryBounds.Left;
+                targetY = primaryBounds.Top;
+                targetWidth = primaryBounds.Width;
+                targetHeight = primaryBounds.Height;
+            }
+
+            PositionOverlay(
+                targetX,
+                targetY,
+                targetWidth,
+                targetHeight);
             if (hasGameRectangle)
             {
                 LogGeometry(
@@ -402,11 +605,28 @@ namespace DragonSwordTreasureRadar
                     gameRectangle,
                     usedClientRectangle,
                     targetX,
-                    targetY);
+                    targetY,
+                    targetWidth,
+                    targetHeight);
             }
         }
 
-        private void PositionOverlay(int targetX, int targetY)
+        private bool IsWorldMapMode()
+        {
+            return _state != null
+                && _state.enabled
+                && _state.worldMap != null
+                && string.Equals(
+                    _state.mode,
+                    "world",
+                    StringComparison.Ordinal);
+        }
+
+        private void PositionOverlay(
+            int targetX,
+            int targetY,
+            int targetWidth,
+            int targetHeight)
         {
             NativeRect current;
             bool alreadyPositioned =
@@ -414,8 +634,8 @@ namespace DragonSwordTreasureRadar
                 && NativeMethods.GetWindowRect(Handle, out current)
                 && current.Left == targetX
                 && current.Top == targetY
-                && current.Width == _overlaySize
-                && current.Height == _overlaySize;
+                && current.Width == targetWidth
+                && current.Height == targetHeight;
             if (alreadyPositioned)
             {
                 return;
@@ -426,10 +646,9 @@ namespace DragonSwordTreasureRadar
                 NativeMethods.HwndTopmost,
                 targetX,
                 targetY,
-                _overlaySize,
-                _overlaySize,
-                NativeMethods.SwpNoActivate |
-                    NativeMethods.SwpShowWindow))
+                targetWidth,
+                targetHeight,
+                NativeMethods.SwpNoActivate))
             {
                 ErrorLog.WriteMessage(
                     "Overlay SetWindowPos failed: Win32 error " +
@@ -437,12 +656,40 @@ namespace DragonSwordTreasureRadar
             }
         }
 
+        private void UpdateForegroundVisibility()
+        {
+            bool shouldShow = false;
+            IntPtr foreground = NativeMethods.GetForegroundWindow();
+            if (_gameProcessId > 0 && foreground != IntPtr.Zero)
+            {
+                uint foregroundProcessId;
+                NativeMethods.GetWindowThreadProcessId(
+                    foreground,
+                    out foregroundProcessId);
+                shouldShow =
+                    foregroundProcessId == (uint)_gameProcessId;
+            }
+            if (shouldShow == _overlayVisible || !IsHandleCreated)
+            {
+                return;
+            }
+
+            NativeMethods.ShowWindow(
+                Handle,
+                shouldShow
+                    ? NativeMethods.SwShowNoActivate
+                    : NativeMethods.SwHide);
+            _overlayVisible = shouldShow;
+        }
+
         private void LogGeometry(
             IntPtr gameWindow,
             NativeRect gameRectangle,
             bool usedClientRectangle,
             int targetX,
-            int targetY)
+            int targetY,
+            int targetWidth,
+            int targetHeight)
         {
             if (!DebugSettings.Enabled)
             {
@@ -457,8 +704,8 @@ namespace DragonSwordTreasureRadar
             string message = string.Format(
                 CultureInfo.InvariantCulture,
                 "Geometry: game={0},{1} {2}x{3}; source={4}; " +
-                "gameDpi={5}; target={6},{7} {8}x{8}; " +
-                "actual={9}; overlayDpi={10}; scale={11:0.####}",
+                "gameDpi={5}; target={6},{7} {8}x{9}; " +
+                "actual={10}; overlayDpi={11}; scale={12:0.####}",
                 gameRectangle.Left,
                 gameRectangle.Top,
                 gameRectangle.Width,
@@ -467,7 +714,8 @@ namespace DragonSwordTreasureRadar
                 GetWindowDpi(gameWindow),
                 targetX,
                 targetY,
-                _overlaySize,
+                targetWidth,
+                targetHeight,
                 hasActualOverlay
                     ? string.Format(
                         CultureInfo.InvariantCulture,

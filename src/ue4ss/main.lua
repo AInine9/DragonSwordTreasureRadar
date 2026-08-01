@@ -23,12 +23,23 @@ if not ok_config then
     return
 end
 
+local ok_world_map, world_map = pcall(require, "world_map")
+if not ok_world_map then
+    log("world_map.lua could not be loaded: " .. tostring(world_map))
+    return
+end
+local world_map_markers_enabled = config.world_map_markers ~= false
+if world_map_markers_enabled then
+    world_map.initialize(log, is_current_generation)
+end
+
 local TOWN_RADAR_RADIUS = 12500.0
 local FIELD_RADAR_RADIUS = 22500.0
 local MINIMAP_SCALE_THRESHOLD = 2.7
 local MINIMAP_SCALE_CHECK_INTERVAL_MS = 1000
 local MAX_RADAR_POINTS = 80
-local UPDATE_INTERVAL_MS = 250
+local WORLD_MAP_UPDATE_INTERVAL_MS = 16
+local MINIMAP_UPDATE_INTERVAL_MS = 250
 local WORLD_MAP_ID = 100
 local TREASURE_GRID_CELL_SIZE = FIELD_RADAR_RADIUS
 
@@ -37,6 +48,7 @@ local treasure_grid = nil
 local radar_radius = FIELD_RADAR_RADIUS
 local enabled = false
 local loop_started = false
+local world_map_loop_started = false
 local update_pending = false
 local state_path = nil
 local write_error_logged = false
@@ -44,6 +56,7 @@ local engine = nil
 local minimap_layer = nil
 local minimap_scale_elapsed_ms = MINIMAP_SCALE_CHECK_INTERVAL_MS
 local minimap_mode = nil
+local world_map_was_active = false
 
 local function ensure_treasures_loaded()
     if world_treasures ~= nil then
@@ -133,17 +146,37 @@ local function resolve_state_path()
 end
 
 local function write_text_atomic(path, text)
-    local temporary_path = path .. ".tmp"
+    local temporary_path = path
+        .. "."
+        .. tostring(generation)
+        .. ".tmp"
     local file, open_error = io.open(temporary_path, "w")
     if file == nil then
         return false, open_error
     end
 
-    file:write(text)
-    file:close()
+    local write_ok, write_result, write_error = pcall(
+        file.write,
+        file,
+        text
+    )
+    if not write_ok or write_result == nil then
+        pcall(file.close, file)
+        os.remove(temporary_path)
+        return false, write_ok and write_error or write_result
+    end
+    local close_ok, close_result, close_error = pcall(
+        file.close,
+        file
+    )
+    if not close_ok or close_result == nil then
+        os.remove(temporary_path)
+        return false, close_ok and close_error or close_result
+    end
     os.remove(path)
     local renamed, rename_error = os.rename(temporary_path, path)
     if not renamed then
+        os.remove(temporary_path)
         return false, rename_error
     end
     return true, nil
@@ -338,21 +371,68 @@ local function build_radar_json(player_x, player_y)
     return table.concat(parts)
 end
 
+local function build_world_map_json(map, player_x, player_y)
+    return string.format(
+        '{"enabled":true,"mode":"world","worldMap":'
+            .. '{"mapId":%d,"dimensions":%.3f,'
+            .. '"uiSize":%.3f,"left":%.3f,"top":%.3f,'
+            .. '"zoom":%.6f,"viewportWidth":%.3f,'
+            .. '"viewportHeight":%.3f,"viewportScale":%.6f,'
+            .. '"playerWorldX":%.3f,"playerWorldY":%.3f,'
+            .. '"playerMapX":%.3f,"playerMapY":%.3f},'
+            .. '"points":[]}',
+        map.map_id,
+        map.dimensions,
+        map.ui_size,
+        map.left,
+        map.top,
+        map.zoom,
+        map.viewport_width,
+        map.viewport_height,
+        map.viewport_scale,
+        player_x,
+        player_y,
+        map.player_map_x,
+        map.player_map_y
+    )
+end
+
 local function update_radar_state()
     if not enabled or not ensure_treasures_loaded() then
         return
     end
 
-    local player_x, player_y = get_player_location()
-    if player_x == nil or player_y == nil then
-        return
+    local map_state = nil
+    if world_map_markers_enabled then
+        map_state = world_map.read_state()
     end
+    local output
+    if map_state ~= nil then
+        world_map_was_active = true
+        local player_x, player_y = get_player_location()
+        if player_x == nil or player_y == nil then
+            return
+        end
+        output = build_world_map_json(
+            map_state,
+            player_x,
+            player_y
+        )
+    else
+        world_map_was_active = false
 
-    minimap_scale_elapsed_ms =
-        minimap_scale_elapsed_ms + UPDATE_INTERVAL_MS
-    if minimap_scale_elapsed_ms >= MINIMAP_SCALE_CHECK_INTERVAL_MS then
-        minimap_scale_elapsed_ms = 0
-        update_radar_radius()
+        local player_x, player_y = get_player_location()
+        if player_x == nil or player_y == nil then
+            return
+        end
+
+        minimap_scale_elapsed_ms =
+            minimap_scale_elapsed_ms + MINIMAP_UPDATE_INTERVAL_MS
+        if minimap_scale_elapsed_ms >= MINIMAP_SCALE_CHECK_INTERVAL_MS then
+            minimap_scale_elapsed_ms = 0
+            update_radar_radius()
+        end
+        output = build_radar_json(player_x, player_y)
     end
 
     local path = resolve_state_path()
@@ -362,7 +442,7 @@ local function update_radar_state()
 
     local written, write_error = write_text_atomic(
         path,
-        build_radar_json(player_x, player_y)
+        output
     )
     if not written then
         if not write_error_logged then
@@ -375,6 +455,8 @@ local function update_radar_state()
     end
 end
 
+local ensure_world_map_loop_started
+
 local function queue_radar_update()
     if not is_current_generation() or not enabled or update_pending then
         return
@@ -386,6 +468,28 @@ local function queue_radar_update()
             pcall(update_radar_state)
         end
         update_pending = false
+        if world_map_was_active then
+            ensure_world_map_loop_started()
+        end
+    end)
+end
+
+ensure_world_map_loop_started = function()
+    if world_map_loop_started then
+        return
+    end
+    world_map_loop_started = true
+
+    LoopAsync(WORLD_MAP_UPDATE_INTERVAL_MS, function()
+        if not is_current_generation() then
+            return true
+        end
+        if not enabled or not world_map_was_active then
+            world_map_loop_started = false
+            return true
+        end
+        queue_radar_update()
+        return false
     end)
 end
 
@@ -395,11 +499,14 @@ local function ensure_loop_started()
     end
     loop_started = true
 
-    LoopAsync(UPDATE_INTERVAL_MS, function()
+    LoopAsync(MINIMAP_UPDATE_INTERVAL_MS, function()
         if not is_current_generation() then
             return true
         end
         queue_radar_update()
+        if world_map_was_active then
+            ensure_world_map_loop_started()
+        end
         return false
     end)
 end

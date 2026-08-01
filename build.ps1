@@ -78,7 +78,8 @@ Copy-Item -LiteralPath $sqlCipher -Destination $modRoot
 Copy-Item -LiteralPath $ooz -Destination $toolsRoot
 Copy-Item -LiteralPath `
     (Join-Path $luaSource "config.lua"), `
-    (Join-Path $luaSource "main.lua") `
+    (Join-Path $luaSource "main.lua"), `
+    (Join-Path $luaSource "world_map.lua") `
     -Destination $scriptsRoot
 Copy-Item -LiteralPath `
     (Join-Path $PSScriptRoot "THIRD_PARTY_NOTICES.txt") `

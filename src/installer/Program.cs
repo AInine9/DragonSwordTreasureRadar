@@ -280,12 +280,19 @@ internal static class Program
                 xmlPath, generatedLua);
 
             string targetModRoot = Path.Combine(modsRoot, ModName);
+            string relativeConfigPath = Path.Combine(
+                "scripts",
+                "config.lua");
             InstallationFileSystem.CopyDirectory(
                 payloadRoot,
-                targetModRoot);
+                targetModRoot,
+                relativeConfigPath);
             string scriptsRoot = Path.Combine(
                 targetModRoot, "scripts");
             Directory.CreateDirectory(scriptsRoot);
+            InstallationFileSystem.InstallConfig(
+                Path.Combine(payloadRoot, relativeConfigPath),
+                Path.Combine(targetModRoot, relativeConfigPath));
             File.Copy(
                 generatedLua,
                 Path.Combine(scriptsRoot, "treasures.lua"),

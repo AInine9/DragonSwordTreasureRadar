@@ -2,10 +2,10 @@
 
 Source code for an external treasure radar for DragonSword: Awakening.
 
-The project uses a UE4SS Lua script to report nearby treasure locations to a
-separate Windows overlay. The overlay positions markers over the in-game
-minimap and reads the local save database in read-only mode to hide collected
-treasures.
+The project uses a UE4SS Lua script to report game and map state to a separate
+Windows overlay. The overlay positions uncollected treasure markers over the
+in-game minimap and world map, and reads the local save database in read-only
+mode to hide collected treasures.
 
 Compiled packages are distributed through GitHub Releases. The repository and
 release packages do not contain extracted game data, encryption keys, treasure

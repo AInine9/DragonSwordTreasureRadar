@@ -11,8 +11,10 @@ namespace DragonSwordTreasureRadar
         public const int WsExTransparent = 0x20;
         public const int WsExToolWindow = 0x80;
         public const int WsExLayered = 0x80000;
+        public const int WsExNoActivate = 0x08000000;
+        public const int SwHide = 0;
+        public const int SwShowNoActivate = 4;
         public const uint SwpNoActivate = 0x0010;
-        public const uint SwpShowWindow = 0x0040;
         public static readonly IntPtr HwndTopmost =
             new IntPtr(-1);
 
@@ -45,6 +47,14 @@ namespace DragonSwordTreasureRadar
 
         [DllImport("user32.dll")]
         public static extern bool IsWindowVisible(IntPtr window);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        public static extern bool ShowWindow(
+            IntPtr window,
+            int command);
 
         [DllImport("user32.dll")]
         public static extern uint GetWindowThreadProcessId(
