@@ -37,3 +37,23 @@ with or endorsed by HOUND13 or the game's publishers.
 https://www.nexusmods.com/dragonswordawakening/mods/63
 I have not shared the GitHub URL anywhere other than Nexus Mods.
 If you see it posted on any other site, please be aware that it was not shared by me.
+
+## How to Build
+### Requirements
+- Windows PowerShell
+- .NET Framework x64 C# compiler:
+`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe`
+  - A Windows x64 C++ compiler compatible with clang++The release build uses llvm-mingw
+
+### Build Steps
+- Clone the repository
+- Download the Windows x64 SQLCipher runtime:
+`powershell -ExecutionPolicy Bypass -File .\tools\get-sqlcipher.ps1`
+- Build ooz.exe using a Windows x64 clang++ compiler:
+```
+powershell -ExecutionPolicy Bypass -File .\tools\build-ooz.ps1 `
+    -CompilerPath "C:\llvm-mingw\bin\clang++.exe"
+```
+  - Replace the compiler path with the location of clang++.exe on your system.
+- Build the overlay, installer, and release package:
+`powershell -ExecutionPolicy Bypass -File .\build.ps1`
