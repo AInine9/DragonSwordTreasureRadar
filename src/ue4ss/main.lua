@@ -43,9 +43,8 @@ local FIELD_RADAR_RADIUS = 22500.0
 local MINIMAP_SCALE_THRESHOLD = 2.7
 local MINIMAP_SCALE_CHECK_INTERVAL_MS = 1000
 local MAX_RADAR_POINTS = 80
--- Conservative timings remain internal so config.lua only exposes
--- user-facing display and control options.
-local WORLD_MAP_UPDATE_INTERVAL_MS = 150
+-- Keep timing internal while preserving responsive world-map tracking.
+local WORLD_MAP_UPDATE_INTERVAL_MS = 32
 local MAP_LOAD_RESUME_DELAY_MS = 3000
 
 local MINIMAP_UPDATE_INTERVAL_MS = 250

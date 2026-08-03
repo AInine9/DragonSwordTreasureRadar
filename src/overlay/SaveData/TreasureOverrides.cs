@@ -47,16 +47,17 @@ namespace DragonSwordTreasureRadar
             Refresh();
             lock (_sync)
             {
-                ignored = _ignored.Contains(saveId);
-                if (ignored)
+                long resolved;
+                if (!_aliases.TryGetValue(saveId, out resolved))
                 {
-                    return saveId;
+                    resolved = saveId;
                 }
 
-                long mapped;
-                return _aliases.TryGetValue(saveId, out mapped)
-                    ? mapped
-                    : saveId;
+                // Resolve aliases before applying ignore rules so ignoring an
+                // alias target also hides every source that maps to it.
+                ignored = _ignored.Contains(saveId)
+                    || _ignored.Contains(resolved);
+                return resolved;
             }
         }
 

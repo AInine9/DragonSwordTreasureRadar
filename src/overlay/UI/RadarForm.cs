@@ -37,8 +37,6 @@ namespace DragonSwordTreasureRadar
         private DateTime _stateAccessFailureSinceUtc;
         private DateTime _nextStateAccessFailureLogUtc;
         private float _displayScale = 1f;
-        private static readonly Color NearestHighlightColor =
-            Color.FromArgb(255, 255, 62, 200);
         private int _overlaySize = ReferenceOverlaySize;
         private string _lastGeometryLog;
         private string _lastSaveFilterLog;
@@ -409,7 +407,10 @@ namespace DragonSwordTreasureRadar
             float diameter =
                 (nearest ? 16f : 10f) * _displayScale;
             WorldTreasure metadata =
-                _worldTreasures.FindBySaveId(point.saveId);
+                _worldTreasures.FindBySaveIdAndCoordinates(
+                    point.saveId,
+                    point.x,
+                    point.y);
             Color color = GetTreasureColor(metadata);
 
             using (Pen outline = new Pen(
@@ -443,8 +444,8 @@ namespace DragonSwordTreasureRadar
             }
         }
 
-        // The nearest marker uses a magenta ring while preserving the
-        // inner type color, so proximity and acquisition type remain visible.
+        // The nearest marker keeps its acquisition-type color while using
+        // the larger nearest-marker diameter for visibility.
         private void DrawTreasureMarker(
             Graphics graphics,
             float centerX,
@@ -459,7 +460,7 @@ namespace DragonSwordTreasureRadar
             if (nearest)
             {
                 using (Brush highlightBrush = new SolidBrush(
-                    NearestHighlightColor))
+                    innerColor))
                 {
                     graphics.FillEllipse(
                         highlightBrush,
@@ -468,30 +469,12 @@ namespace DragonSwordTreasureRadar
                         diameter,
                         diameter);
                 }
-
-                float ringThickness = Math.Max(
-                    2.5f,
-                    3.5f * _displayScale);
-                float innerDiameter = Math.Max(
-                    2f,
-                    diameter - ringThickness * 2f);
-                float innerHalf = innerDiameter / 2f;
-
-                using (Brush innerBrush = new SolidBrush(innerColor))
-                {
-                    graphics.FillEllipse(
-                        innerBrush,
-                        centerX - innerHalf,
-                        centerY - innerHalf,
-                        innerDiameter,
-                        innerDiameter);
-                }
                 graphics.DrawEllipse(
                     outline,
-                    centerX - innerHalf,
-                    centerY - innerHalf,
-                    innerDiameter,
-                    innerDiameter);
+                    centerX - half,
+                    centerY - half,
+                    diameter,
+                    diameter);
                 return;
             }
 
@@ -859,6 +842,11 @@ namespace DragonSwordTreasureRadar
             for (int index = 0; index < count; index++)
             {
                 RadarPoint point = points[index];
+                WorldTreasure metadata =
+                    _worldTreasures.FindBySaveIdAndCoordinates(
+                        point.saveId,
+                        point.x,
+                        point.y);
                 double horizontal = Math.Sqrt(
                     point.dx * point.dx +
                     point.dy * point.dy);
@@ -868,10 +856,19 @@ namespace DragonSwordTreasureRadar
                     "x={5:0}; y={6:0}; z={7}; " +
                     "dxy={8:0}({9:0.0}m); dz={10}; {11}; overlaps={12}",
                     index,
-                    GetDebugName(point.saveId),
+                    metadata == null
+                        ? TreasureIdentity.GetDebugName(
+                            null,
+                            point.saveId)
+                        : metadata.DebugName,
                     point.saveId,
-                    GetUidName(point.saveId),
-                    GetGroupId(point.saveId),
+                    metadata == null
+                        || String.IsNullOrWhiteSpace(metadata.UidName)
+                        ? "(missing)"
+                        : metadata.UidName,
+                    metadata == null
+                        ? 0
+                        : metadata.GroupId,
                     point.x,
                     point.y,
                     point.hasZ
@@ -976,34 +973,6 @@ namespace DragonSwordTreasureRadar
                 + string.Join(
                     Environment.NewLine,
                     rows.ToArray());
-        }
-
-        private string GetDebugName(long saveId)
-        {
-            WorldTreasure metadata =
-                _worldTreasures.FindBySaveId(saveId);
-            return metadata == null
-                ? TreasureIdentity.GetDebugName(null, saveId)
-                : metadata.DebugName;
-        }
-
-        private string GetUidName(long saveId)
-        {
-            WorldTreasure metadata =
-                _worldTreasures.FindBySaveId(saveId);
-            return metadata == null
-                || String.IsNullOrWhiteSpace(metadata.UidName)
-                ? "(missing)"
-                : metadata.UidName;
-        }
-
-        private long GetGroupId(long saveId)
-        {
-            WorldTreasure metadata =
-                _worldTreasures.FindBySaveId(saveId);
-            return metadata == null
-                ? 0
-                : metadata.GroupId;
         }
 
         private static string GetVerticalDeltaText(

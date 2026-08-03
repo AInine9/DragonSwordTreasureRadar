@@ -19,8 +19,8 @@ namespace DragonSwordTreasureRadar
         private int _version;
         private List<WorldTreasure> _points =
             new List<WorldTreasure>();
-        private Dictionary<long, WorldTreasure> _bySaveId =
-            new Dictionary<long, WorldTreasure>();
+        private Dictionary<long, List<WorldTreasure>> _bySaveId =
+            new Dictionary<long, List<WorldTreasure>>();
 
         public WorldTreasureCatalog()
         {
@@ -40,12 +40,40 @@ namespace DragonSwordTreasureRadar
             get { return _version; }
         }
 
-        public WorldTreasure FindBySaveId(long saveId)
+        // Some generated records share a save ID but have different names
+        // and locations. Minimap metadata therefore uses both the save ID
+        // and marker coordinates instead of collapsing those records.
+        public WorldTreasure FindBySaveIdAndCoordinates(
+            long saveId,
+            double x,
+            double y)
         {
-            WorldTreasure treasure;
-            return _bySaveId.TryGetValue(saveId, out treasure)
-                ? treasure
-                : null;
+            List<WorldTreasure> treasures;
+            if (!_bySaveId.TryGetValue(saveId, out treasures)
+                || treasures.Count == 0)
+            {
+                return null;
+            }
+            if (treasures.Count == 1)
+            {
+                return treasures[0];
+            }
+
+            WorldTreasure nearest = null;
+            double nearestDistanceSquared = Double.MaxValue;
+            foreach (WorldTreasure treasure in treasures)
+            {
+                double deltaX = treasure.X - x;
+                double deltaY = treasure.Y - y;
+                double distanceSquared =
+                    deltaX * deltaX + deltaY * deltaY;
+                if (distanceSquared < nearestDistanceSquared)
+                {
+                    nearest = treasure;
+                    nearestDistanceSquared = distanceSquared;
+                }
+            }
+            return nearest;
         }
 
         public void Refresh()
@@ -163,14 +191,19 @@ namespace DragonSwordTreasureRadar
                 });
             }
 
-            Dictionary<long, WorldTreasure> bySaveId =
-                new Dictionary<long, WorldTreasure>();
+            Dictionary<long, List<WorldTreasure>> bySaveId =
+                new Dictionary<long, List<WorldTreasure>>();
             foreach (WorldTreasure treasure in loaded)
             {
-                if (!bySaveId.ContainsKey(treasure.SaveId))
+                List<WorldTreasure> matches;
+                if (!bySaveId.TryGetValue(
+                    treasure.SaveId,
+                    out matches))
                 {
-                    bySaveId[treasure.SaveId] = treasure;
+                    matches = new List<WorldTreasure>();
+                    bySaveId[treasure.SaveId] = matches;
                 }
+                matches.Add(treasure);
             }
 
             _points = loaded;
