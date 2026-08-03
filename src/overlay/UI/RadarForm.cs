@@ -21,6 +21,15 @@ namespace DragonSwordTreasureRadar
         private const int ReferenceTopMargin = 37;
         private const float ReferenceRadarRadius = 170f;
 
+        // Height indicators use a continuous 180-degree scale. The player
+        // actor origin sits above the treasure reference point, so the
+        // player Z value is shifted before comparison. Near-equal heights
+        // keep a horizontal pointer instead of hiding the indicator.
+        private const double ComparablePlayerZOffset = -100.0;
+        private const double HeightIndicatorDeadZone = 100.0;
+        private const double HeightIndicatorSensitivity = 2500.0;
+        private const double HeightIndicatorMaximumAngleDegrees = 85.0;
+
         private readonly Timer _timer;
         private readonly string _statePath;
         private readonly JavaScriptSerializer _serializer;
@@ -124,6 +133,8 @@ namespace DragonSwordTreasureRadar
 
             eventArgs.Graphics.SmoothingMode =
                 SmoothingMode.AntiAlias;
+            bool showDebugCoordinates = DebugSettings.Enabled;
+            float textScale = NormalizeTextScale(state.textScale);
             if (string.Equals(
                 state.mode,
                 "world",
@@ -135,6 +146,8 @@ namespace DragonSwordTreasureRadar
                     state.worldMap,
                     state.showHeight,
                     state.showTreasureTypes,
+                    showDebugCoordinates,
+                    textScale,
                     state.playerZ,
                     state.hasPlayerZ);
                 return;
@@ -165,6 +178,8 @@ namespace DragonSwordTreasureRadar
                     index == 0,
                     state.showHeight,
                     state.showTreasureTypes,
+                    showDebugCoordinates,
+                    textScale,
                     state.playerZ,
                     state.hasPlayerZ);
             }
@@ -175,6 +190,8 @@ namespace DragonSwordTreasureRadar
             WorldMapState map,
             bool showHeight,
             bool showTreasureTypes,
+            bool showDebugCoordinates,
+            float textScale,
             double playerZ,
             bool hasPlayerZ)
         {
@@ -189,7 +206,8 @@ namespace DragonSwordTreasureRadar
                 return;
             }
 
-            bool showLabel = showHeight || showTreasureTypes;
+            bool showLabel =
+                showDebugCoordinates || showTreasureTypes;
 
             float windowScaleX =
                 ClientSize.Width / (float)map.viewportWidth;
@@ -297,20 +315,40 @@ namespace DragonSwordTreasureRadar
                 }
             }
 
-            if (showLabel && nearestTreasure != null)
+            if (nearestTreasure != null)
             {
-                DrawNearestLabel(
-                    graphics,
-                    nearestX,
-                    nearestY,
-                    showHeight,
-                    showTreasureTypes,
-                    playerZ,
-                    hasPlayerZ,
-                    nearestTreasure.Z,
-                    nearestTreasure.HasZ,
-                    nearestTreasure.SaveId,
-                    nearestTreasure);
+                Color nearestColor =
+                    GetTreasureColor(nearestTreasure);
+                if (showHeight)
+                {
+                    DrawHeightIndicator(
+                        graphics,
+                        nearestX,
+                        nearestY,
+                        nearestDiameter,
+                        playerZ,
+                        hasPlayerZ,
+                        nearestTreasure.Z,
+                        nearestTreasure.HasZ,
+                        nearestColor);
+                }
+                if (showLabel)
+                {
+                    DrawNearestLabel(
+                        graphics,
+                        nearestX,
+                        nearestY,
+                        nearestDiameter,
+                        textScale,
+                        showDebugCoordinates,
+                        showTreasureTypes,
+                        playerZ,
+                        hasPlayerZ,
+                        nearestTreasure.Z,
+                        nearestTreasure.HasZ,
+                        nearestTreasure.SaveId,
+                        nearestTreasure);
+                }
             }
 
             graphics.Restore(saved);
@@ -397,6 +435,8 @@ namespace DragonSwordTreasureRadar
             bool nearest,
             bool showHeight,
             bool showTreasureTypes,
+            bool showDebugCoordinates,
+            float textScale,
             double playerZ,
             bool hasPlayerZ)
         {
@@ -427,20 +467,38 @@ namespace DragonSwordTreasureRadar
                     outline);
             }
 
-            if (nearest && (showHeight || showTreasureTypes))
+            if (nearest)
             {
-                DrawNearestLabel(
-                    graphics,
-                    x,
-                    y,
-                    showHeight,
-                    showTreasureTypes,
-                    playerZ,
-                    hasPlayerZ,
-                    point.z,
-                    point.hasZ,
-                    point.saveId,
-                    metadata);
+                if (showHeight)
+                {
+                    DrawHeightIndicator(
+                        graphics,
+                        x,
+                        y,
+                        diameter,
+                        playerZ,
+                        hasPlayerZ,
+                        point.z,
+                        point.hasZ,
+                        color);
+                }
+                if (showDebugCoordinates || showTreasureTypes)
+                {
+                    DrawNearestLabel(
+                        graphics,
+                        x,
+                        y,
+                        diameter,
+                        textScale,
+                        showDebugCoordinates,
+                        showTreasureTypes,
+                        playerZ,
+                        hasPlayerZ,
+                        point.z,
+                        point.hasZ,
+                        point.saveId,
+                        metadata);
+                }
             }
         }
 
@@ -495,13 +553,156 @@ namespace DragonSwordTreasureRadar
                 diameter);
         }
 
-        // Height and type labels are controlled by separate Lua settings;
-        // debug_logging only affects diagnostic output.
+        // show_height controls the normal height pointer. Exact Z values are
+        // displayed only while debug_logging is enabled, and treasure type
+        // labels remain independently configurable.
+        private void DrawHeightIndicator(
+            Graphics graphics,
+            float anchorX,
+            float anchorY,
+            float markerDiameter,
+            double playerZ,
+            bool hasPlayerZ,
+            double treasureZ,
+            bool hasTreasureZ,
+            Color color)
+        {
+            if (!hasPlayerZ || !hasTreasureZ)
+            {
+                return;
+            }
+
+            double comparablePlayerZ = GetComparablePlayerZ(playerZ);
+            double deltaZ = treasureZ - comparablePlayerZ;
+            if (Math.Abs(deltaZ) <= HeightIndicatorDeadZone)
+            {
+                deltaZ = 0.0;
+            }
+
+            // The pointer rotates through the right semicircle: 12 o'clock
+            // means above, 3 o'clock means near the same height, and
+            // 6 o'clock means below. It is anchored just left of the marker.
+            double pointerAngle = -Math.Atan(
+                deltaZ / HeightIndicatorSensitivity);
+            double maximumAngle =
+                HeightIndicatorMaximumAngleDegrees
+                * Math.PI / 180.0;
+            pointerAngle = Math.Max(
+                -maximumAngle,
+                Math.Min(maximumAngle, pointerAngle));
+
+            float directionX = (float)Math.Cos(pointerAngle);
+            float directionY = (float)Math.Sin(pointerAngle);
+            float perpendicularX = -directionY;
+            float perpendicularY = directionX;
+
+            // Keep the pointer short, thick, and close to the treasure marker.
+            float indicatorLength = Math.Min(
+                36f,
+                Math.Max(20f, 24f * _displayScale));
+            float markerGap = Math.Min(
+                3f,
+                Math.Max(1.5f, 2f * _displayScale));
+            float pointerCenterX = anchorX
+                - markerDiameter / 2f
+                - markerGap
+                - indicatorLength / 2f;
+            float pointerCenterY = anchorY;
+            float halfLength = indicatorLength / 2f;
+            float startX = pointerCenterX - directionX * halfLength;
+            float startY = pointerCenterY - directionY * halfLength;
+            float tipX = pointerCenterX + directionX * halfLength;
+            float tipY = pointerCenterY + directionY * halfLength;
+
+            float headLength = Math.Min(
+                15f,
+                Math.Max(8f, 10f * _displayScale));
+            float headHalfWidth = Math.Min(
+                8f,
+                Math.Max(4f, 5f * _displayScale));
+            float baseX = tipX - directionX * headLength;
+            float baseY = tipY - directionY * headLength;
+
+            float outlineWidth = Math.Min(
+                11f,
+                Math.Max(6f, 8f * _displayScale));
+            float innerWidth = Math.Min(
+                8.5f,
+                Math.Max(4.5f, 6f * _displayScale));
+            Color outlineColor = Color.FromArgb(235, 5, 12, 22);
+            Color indicatorColor = Color.FromArgb(
+                255,
+                color.R,
+                color.G,
+                color.B);
+
+            using (Pen outlinePen = new Pen(
+                outlineColor,
+                outlineWidth))
+            using (Pen indicatorPen = new Pen(
+                indicatorColor,
+                innerWidth))
+            {
+                outlinePen.StartCap = LineCap.Round;
+                outlinePen.EndCap = LineCap.Round;
+                indicatorPen.StartCap = LineCap.Round;
+                indicatorPen.EndCap = LineCap.Round;
+                graphics.DrawLine(
+                    outlinePen,
+                    startX,
+                    startY,
+                    baseX,
+                    baseY);
+                graphics.DrawLine(
+                    indicatorPen,
+                    startX,
+                    startY,
+                    baseX,
+                    baseY);
+            }
+
+            float headOutlineExpansion = Math.Min(
+                3f,
+                Math.Max(2f, 2f * _displayScale));
+            PointF[] outlineHead =
+            {
+                new PointF(tipX, tipY),
+                new PointF(
+                    baseX + perpendicularX
+                        * (headHalfWidth + headOutlineExpansion),
+                    baseY + perpendicularY
+                        * (headHalfWidth + headOutlineExpansion)),
+                new PointF(
+                    baseX - perpendicularX
+                        * (headHalfWidth + headOutlineExpansion),
+                    baseY - perpendicularY
+                        * (headHalfWidth + headOutlineExpansion))
+            };
+            PointF[] colorHead =
+            {
+                new PointF(tipX, tipY),
+                new PointF(
+                    baseX + perpendicularX * headHalfWidth,
+                    baseY + perpendicularY * headHalfWidth),
+                new PointF(
+                    baseX - perpendicularX * headHalfWidth,
+                    baseY - perpendicularY * headHalfWidth)
+            };
+            using (Brush outlineBrush = new SolidBrush(outlineColor))
+            using (Brush indicatorBrush = new SolidBrush(indicatorColor))
+            {
+                graphics.FillPolygon(outlineBrush, outlineHead);
+                graphics.FillPolygon(indicatorBrush, colorHead);
+            }
+        }
+
         private void DrawNearestLabel(
             Graphics graphics,
             float anchorX,
             float anchorY,
-            bool showHeight,
+            float markerDiameter,
+            float textScale,
+            bool showDebugCoordinates,
             bool showTreasureTypes,
             double playerZ,
             bool hasPlayerZ,
@@ -510,11 +711,11 @@ namespace DragonSwordTreasureRadar
             long saveId,
             WorldTreasure metadata)
         {
-            string heightText = null;
-            if (showHeight)
+            string coordinateText = null;
+            if (showDebugCoordinates)
             {
                 string playerText = hasPlayerZ
-                    ? playerZ.ToString(
+                    ? GetComparablePlayerZ(playerZ).ToString(
                         "0",
                         CultureInfo.InvariantCulture)
                     : "?";
@@ -523,7 +724,7 @@ namespace DragonSwordTreasureRadar
                         "0",
                         CultureInfo.InvariantCulture)
                     : "?";
-                heightText = string.Format(
+                coordinateText = string.Format(
                     CultureInfo.InvariantCulture,
                     "({0}, {1})",
                     playerText,
@@ -538,75 +739,179 @@ namespace DragonSwordTreasureRadar
                     : metadata.DebugName;
             }
 
-            string text = heightText == null
-                ? typeText
-                : typeText == null
-                    ? heightText
-                    : heightText + Environment.NewLine + typeText;
-            if (String.IsNullOrEmpty(text))
+            if (String.IsNullOrEmpty(typeText)
+                && String.IsNullOrEmpty(coordinateText))
             {
                 return;
             }
-            Color textColor = GetTreasureColor(metadata);
 
-            float fontSize = Math.Max(
+            Color baseColor = GetTreasureColor(metadata);
+            Color typeColor = Color.FromArgb(
+                210,
+                baseColor.R,
+                baseColor.G,
+                baseColor.B);
+            Color coordinateColor = Color.FromArgb(
+                200,
+                baseColor.R,
+                baseColor.G,
+                baseColor.B);
+
+            // Pixel units prevent Windows DPI scaling from changing label
+            // size unexpectedly. text_scale provides one user-facing control
+            // for both treasure type and debug coordinate labels.
+            float baseFontSize = Math.Min(
+                26f,
+                Math.Max(16f, 18f * _displayScale));
+            float fontSize = baseFontSize * textScale;
+            float verticalGap = Math.Min(
                 8f,
-                9f * _displayScale);
-            float offset = Math.Max(
-                8f,
-                10f * _displayScale);
+                Math.Max(4f, 5f * _displayScale));
+            float lineGap = Math.Min(
+                4f,
+                Math.Max(1f, 2f * _displayScale));
 
             using (Font font = new Font(
                 SystemFonts.MessageBoxFont.FontFamily,
                 fontSize,
                 FontStyle.Bold,
-                GraphicsUnit.Point))
+                GraphicsUnit.Pixel))
             {
-                SizeF measured = graphics.MeasureString(
-                    text,
-                    font);
-                float left = anchorX + offset;
-                float top = anchorY - measured.Height - offset;
-
-                if (left + measured.Width > ClientSize.Width)
+                SizeF typeSize = String.IsNullOrEmpty(typeText)
+                    ? SizeF.Empty
+                    : graphics.MeasureString(typeText, font);
+                SizeF coordinateSize =
+                    String.IsNullOrEmpty(coordinateText)
+                        ? SizeF.Empty
+                        : graphics.MeasureString(
+                            coordinateText,
+                            font);
+                float blockHeight = typeSize.Height
+                    + coordinateSize.Height;
+                if (!typeSize.IsEmpty && !coordinateSize.IsEmpty)
                 {
-                    left = anchorX - measured.Width - offset;
+                    blockHeight += lineGap;
                 }
-                if (left < 0f)
+
+                float top = anchorY
+                    + markerDiameter / 2f
+                    + verticalGap;
+                if (top + blockHeight > ClientSize.Height)
                 {
-                    left = 0f;
+                    top = anchorY
+                        - markerDiameter / 2f
+                        - verticalGap
+                        - blockHeight;
                 }
                 if (top < 0f)
                 {
-                    top = anchorY + offset;
-                }
-                if (top + measured.Height > ClientSize.Height)
-                {
-                    top = ClientSize.Height - measured.Height;
+                    top = 0f;
                 }
 
-                float shadowOffset = Math.Max(
-                    1f,
-                    1.5f * _displayScale);
-                using (Brush shadowBrush = new SolidBrush(
-                    Color.FromArgb(230, 0, 0, 0)))
-                using (Brush textBrush = new SolidBrush(
-                    textColor))
+                float outlineOffset = Math.Min(
+                    2.5f,
+                    Math.Max(1.25f, 1.5f * _displayScale));
+                if (!String.IsNullOrEmpty(typeText))
                 {
-                    graphics.DrawString(
-                        text,
+                    DrawOutlinedLabelLine(
+                        graphics,
+                        typeText,
                         font,
-                        shadowBrush,
-                        left + shadowOffset,
-                        top + shadowOffset);
-                    graphics.DrawString(
-                        text,
+                        typeColor,
+                        anchorX,
+                        top,
+                        typeSize,
+                        outlineOffset);
+                    top += typeSize.Height;
+                    if (!String.IsNullOrEmpty(coordinateText))
+                    {
+                        top += lineGap;
+                    }
+                }
+                if (!String.IsNullOrEmpty(coordinateText))
+                {
+                    DrawOutlinedLabelLine(
+                        graphics,
+                        coordinateText,
                         font,
-                        textBrush,
-                        left,
-                        top);
+                        coordinateColor,
+                        anchorX,
+                        top,
+                        coordinateSize,
+                        outlineOffset);
                 }
             }
+        }
+
+        private void DrawOutlinedLabelLine(
+            Graphics graphics,
+            string text,
+            Font font,
+            Color textColor,
+            float centerX,
+            float top,
+            SizeF measured,
+            float outlineOffset)
+        {
+            float left = centerX - measured.Width / 2f;
+            if (left < 0f)
+            {
+                left = 0f;
+            }
+            if (left + measured.Width > ClientSize.Width)
+            {
+                left = ClientSize.Width - measured.Width;
+            }
+
+            using (Brush outlineBrush = new SolidBrush(
+                Color.FromArgb(220, 0, 0, 0)))
+            using (Brush textBrush = new SolidBrush(textColor))
+            {
+                graphics.DrawString(
+                    text,
+                    font,
+                    outlineBrush,
+                    left - outlineOffset,
+                    top);
+                graphics.DrawString(
+                    text,
+                    font,
+                    outlineBrush,
+                    left + outlineOffset,
+                    top);
+                graphics.DrawString(
+                    text,
+                    font,
+                    outlineBrush,
+                    left,
+                    top - outlineOffset);
+                graphics.DrawString(
+                    text,
+                    font,
+                    outlineBrush,
+                    left,
+                    top + outlineOffset);
+                graphics.DrawString(
+                    text,
+                    font,
+                    textBrush,
+                    left,
+                    top);
+            }
+        }
+
+        private static float NormalizeTextScale(double configuredScale)
+        {
+            if (Double.IsNaN(configuredScale)
+                || Double.IsInfinity(configuredScale)
+                || configuredScale <= 0)
+            {
+                return 1f;
+            }
+
+            return (float)Math.Max(
+                0.5,
+                Math.Min(2.0, configuredScale));
         }
 
         // Type colors intentionally describe acquisition mechanics, not rarity.
@@ -792,7 +1097,7 @@ namespace DragonSwordTreasureRadar
                 : state.mode ?? "minimap";
             string playerZ = state != null
                 && state.hasPlayerZ
-                ? state.playerZ.ToString(
+                ? GetComparablePlayerZ(state.playerZ).ToString(
                     "0",
                     CultureInfo.InvariantCulture)
                 : "?";
@@ -987,9 +1292,15 @@ namespace DragonSwordTreasureRadar
                 return "?";
             }
 
-            return (treasureZ - state.playerZ).ToString(
+            return (treasureZ
+                - GetComparablePlayerZ(state.playerZ)).ToString(
                 "0",
                 CultureInfo.InvariantCulture);
+        }
+
+        private static double GetComparablePlayerZ(double playerZ)
+        {
+            return playerZ + ComparablePlayerZOffset;
         }
 
         private static string FindRadarOverlapSummary(

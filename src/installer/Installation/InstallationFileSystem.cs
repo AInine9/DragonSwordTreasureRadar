@@ -124,7 +124,14 @@ internal static class InstallationFileSystem
                     System.StringComparison.OrdinalIgnoreCase))
                 {
                     missingLines.Add(
-                        "    -- Show player and treasure Z coordinates to help locate chests faster.");
+                        "    -- Show a 180-degree height pointer for the nearest treasure.");
+                }
+                else if (settingName.Equals(
+                    "text_scale",
+                    System.StringComparison.OrdinalIgnoreCase))
+                {
+                    missingLines.Add(
+                        "    -- Scale treasure type and debug coordinate text (1.0 = default).");
                 }
                 missingLines.Add(sourceLine);
                 existingSettings.Add(settingName);

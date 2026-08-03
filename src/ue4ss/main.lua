@@ -31,6 +31,8 @@ end
 local world_map_markers_enabled = config.world_map_markers ~= false
 local show_height = config.show_height ~= false
 local show_treasure_types = config.show_treasure_types ~= false
+local text_scale = tonumber(config.text_scale) or 1.0
+text_scale = math.max(0.5, math.min(2.0, text_scale))
 if world_map_markers_enabled then
     world_map.initialize(log, is_current_generation)
     -- Avoid LoadMap hooks: this game is more stable when world changes are
@@ -371,9 +373,10 @@ local function build_radar_json(player_x, player_y, player_z)
     local count = math.min(#nearby, MAX_RADAR_POINTS)
     local parts = {
         string.format(
-            '{"enabled":true,"showHeight":%s,"showTreasureTypes":%s,"playerZ":%.3f,"hasPlayerZ":%s,"radius":%.3f,"points":[',
+            '{"enabled":true,"showHeight":%s,"showTreasureTypes":%s,"textScale":%.3f,"playerZ":%.3f,"hasPlayerZ":%s,"radius":%.3f,"points":[',
             show_height and "true" or "false",
             show_treasure_types and "true" or "false",
+            text_scale,
             player_z or 0,
             player_z ~= nil and "true" or "false",
             radar_radius
@@ -401,7 +404,7 @@ end
 
 local function build_world_map_json(map, player_x, player_y, player_z)
     return string.format(
-        '{"enabled":true,"showHeight":%s,"showTreasureTypes":%s,"playerZ":%.3f,"hasPlayerZ":%s,"mode":"world","worldMap":'
+        '{"enabled":true,"showHeight":%s,"showTreasureTypes":%s,"textScale":%.3f,"playerZ":%.3f,"hasPlayerZ":%s,"mode":"world","worldMap":'
             .. '{"mapId":%d,"dimensions":%.3f,'
             .. '"uiSize":%.3f,"left":%.3f,"top":%.3f,'
             .. '"zoom":%.6f,"viewportWidth":%.3f,'
@@ -411,6 +414,7 @@ local function build_world_map_json(map, player_x, player_y, player_z)
             .. '"points":[]}',
         show_height and "true" or "false",
         show_treasure_types and "true" or "false",
+        text_scale,
         player_z or 0,
         player_z ~= nil and "true" or "false",
         map.map_id,
