@@ -283,16 +283,24 @@ internal static class Program
             string relativeConfigPath = Path.Combine(
                 "scripts",
                 "config.lua");
+            string relativeOverridesPath =
+                "treasure_overrides.txt";
+
+            // Preserve user settings and custom override rules on upgrades.
             InstallationFileSystem.CopyDirectory(
                 payloadRoot,
                 targetModRoot,
-                relativeConfigPath);
+                relativeConfigPath,
+                relativeOverridesPath);
             string scriptsRoot = Path.Combine(
                 targetModRoot, "scripts");
             Directory.CreateDirectory(scriptsRoot);
             InstallationFileSystem.InstallConfig(
                 Path.Combine(payloadRoot, relativeConfigPath),
                 Path.Combine(targetModRoot, relativeConfigPath));
+            InstallationFileSystem.CopyFileIfMissing(
+                Path.Combine(payloadRoot, relativeOverridesPath),
+                Path.Combine(targetModRoot, relativeOverridesPath));
             File.Copy(
                 generatedLua,
                 Path.Combine(scriptsRoot, "treasures.lua"),

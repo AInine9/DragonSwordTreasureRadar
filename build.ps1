@@ -16,6 +16,8 @@ $installerSources = Get-ChildItem `
     Sort-Object FullName |
     Select-Object -ExpandProperty FullName
 $luaSource = Join-Path $PSScriptRoot "src\ue4ss"
+$overrideSource = Join-Path $PSScriptRoot `
+    "src\resources\treasure_overrides.txt"
 $sqlCipher = Join-Path $PSScriptRoot "vendor\e_sqlcipher.dll"
 $ooz = Join-Path $PSScriptRoot "vendor\ooz.exe"
 $payloadRoot = Join-Path $OutputRoot "payload"
@@ -35,6 +37,9 @@ if (-not (Test-Path -LiteralPath $sqlCipher)) {
 }
 if (-not (Test-Path -LiteralPath $ooz)) {
     throw "Run tools\build-ooz.ps1 before building."
+}
+if (-not (Test-Path -LiteralPath $overrideSource)) {
+    throw "The default treasure_overrides.txt file is missing."
 }
 
 if (Test-Path -LiteralPath $OutputRoot) {
@@ -81,6 +86,7 @@ Copy-Item -LiteralPath `
     (Join-Path $luaSource "main.lua"), `
     (Join-Path $luaSource "world_map.lua") `
     -Destination $scriptsRoot
+Copy-Item -LiteralPath $overrideSource -Destination $modRoot
 Copy-Item -LiteralPath `
     (Join-Path $PSScriptRoot "THIRD_PARTY_NOTICES.txt") `
     -Destination (Join-Path $modRoot "THIRD_PARTY_NOTICES.txt")
@@ -91,6 +97,7 @@ Copy-Item -LiteralPath `
     (Join-Path $PSScriptRoot "licenses\SQLCIPHER.txt") `
     -Destination (Join-Path $modRoot "LICENSE-SQLCIPHER.txt")
 Copy-Item -LiteralPath `
+    (Join-Path $PSScriptRoot "README.md"), `
     (Join-Path $PSScriptRoot "THIRD_PARTY_NOTICES.txt"), `
     (Join-Path $PSScriptRoot "licenses\GPL-3.0.txt") `
     -Destination $OutputRoot
@@ -109,6 +116,7 @@ if (Test-Path -LiteralPath `
 
 $archiveInputs = @(
     $installer
+    (Join-Path $OutputRoot "README.md")
     (Join-Path $OutputRoot "THIRD_PARTY_NOTICES.txt")
     (Join-Path $OutputRoot "LICENSE-GPL-3.0.txt")
     $payloadRoot

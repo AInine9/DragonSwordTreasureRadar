@@ -5,6 +5,11 @@ namespace DragonSwordTreasureRadar
     internal sealed class RadarState
     {
         public bool enabled { get; set; }
+        public bool showHeight { get; set; }
+        public bool showTreasureTypes { get; set; }
+        public double textScale { get; set; }
+        public double playerZ { get; set; }
+        public bool hasPlayerZ { get; set; }
         public string mode { get; set; }
         public double radius { get; set; }
         public List<RadarPoint> points { get; set; }
@@ -14,6 +19,10 @@ namespace DragonSwordTreasureRadar
     internal sealed class RadarPoint
     {
         public long saveId { get; set; }
+        public double x { get; set; }
+        public double y { get; set; }
+        public double z { get; set; }
+        public bool hasZ { get; set; }
         public double dx { get; set; }
         public double dy { get; set; }
     }

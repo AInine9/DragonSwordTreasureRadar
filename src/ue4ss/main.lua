@@ -29,8 +29,15 @@ if not ok_world_map then
     return
 end
 local world_map_markers_enabled = config.world_map_markers ~= false
+local show_height = config.show_height ~= false
+local show_treasure_types = config.show_treasure_types ~= false
+local text_scale = tonumber(config.text_scale) or 1.0
+text_scale = math.max(0.5, math.min(2.0, text_scale))
 if world_map_markers_enabled then
     world_map.initialize(log, is_current_generation)
+    -- Avoid LoadMap hooks: this game is more stable when world changes are
+    -- detected through temporary Pawn loss and delayed widget rescanning.
+    log("World-map safety mode: Pawn-loss detection enabled.")
 end
 
 local TOWN_RADAR_RADIUS = 12500.0
@@ -38,7 +45,10 @@ local FIELD_RADAR_RADIUS = 22500.0
 local MINIMAP_SCALE_THRESHOLD = 2.7
 local MINIMAP_SCALE_CHECK_INTERVAL_MS = 1000
 local MAX_RADAR_POINTS = 80
-local WORLD_MAP_UPDATE_INTERVAL_MS = 16
+-- Keep timing internal while preserving responsive world-map tracking.
+local WORLD_MAP_UPDATE_INTERVAL_MS = 32
+local MAP_LOAD_RESUME_DELAY_MS = 3000
+
 local MINIMAP_UPDATE_INTERVAL_MS = 250
 local WORLD_MAP_ID = 100
 local TREASURE_GRID_CELL_SIZE = FIELD_RADAR_RADIUS
@@ -57,6 +67,7 @@ local minimap_layer = nil
 local minimap_scale_elapsed_ms = MINIMAP_SCALE_CHECK_INTERVAL_MS
 local minimap_mode = nil
 local world_map_was_active = false
+local map_resume_delay_remaining_ms = 0
 
 local function ensure_treasures_loaded()
     if world_treasures ~= nil then
@@ -69,12 +80,15 @@ local function ensure_treasures_loaded()
         return false
     end
 
+    -- PosZ is generated locally and forwarded to the overlay for height
+    -- diagnostics. UIDName remains in treasures.lua for overlay-side labels.
     world_treasures = {}
     treasure_grid = {}
     for _, treasure in ipairs(data) do
         local map_id = tonumber(string.sub(tostring(treasure.section), -3))
         local x = tonumber(treasure.x)
         local y = tonumber(treasure.y)
+        local z = tonumber(treasure.z)
         local save_id = tonumber(treasure.save_id)
         if map_id == WORLD_MAP_ID
             and x ~= nil
@@ -85,6 +99,8 @@ local function ensure_treasures_loaded()
                 save_id = save_id,
                 x = x,
                 y = y,
+                z = z,
+                has_z = z ~= nil,
             }
             table.insert(world_treasures, point)
 
@@ -190,56 +206,58 @@ local function write_disabled_state()
 end
 
 local function get_player_location()
-    local ok, player_x, player_y = pcall(function()
+    local ok, player_x, player_y, player_z = pcall(function()
         if engine == nil then
             engine = FindFirstOf("Engine")
         end
         if engine == nil then
-            return nil, nil
+            return nil, nil, nil
         end
 
         local viewport = engine.GameViewport
         if viewport == nil then
-            return nil, nil
+            return nil, nil, nil
         end
 
         local game_instance = viewport.GameInstance
         if game_instance == nil then
-            return nil, nil
+            return nil, nil, nil
         end
 
         local local_players = game_instance.LocalPlayers
         if local_players == nil then
-            return nil, nil
+            return nil, nil, nil
         end
 
         local local_player = local_players[1]
         if local_player == nil then
-            return nil, nil
+            return nil, nil, nil
         end
 
         local controller = local_player.PlayerController
         if controller == nil then
-            return nil, nil
+            return nil, nil, nil
         end
 
         local pawn = controller.Pawn
         if pawn == nil then
-            return nil, nil
+            return nil, nil, nil
         end
 
         local location = pawn:K2_GetActorLocation()
         if location == nil then
-            return nil, nil
+            return nil, nil, nil
         end
 
-        return tonumber(location.X), tonumber(location.Y)
+        return tonumber(location.X),
+            tonumber(location.Y),
+            tonumber(location.Z)
     end)
     if not ok then
         engine = nil
-        return nil, nil
+        return nil, nil, nil
     end
-    return player_x, player_y
+    return player_x, player_y, player_z
 end
 
 local function is_valid_object(object)
@@ -308,7 +326,7 @@ local function update_radar_radius()
     end
 end
 
-local function build_radar_json(player_x, player_y)
+local function build_radar_json(player_x, player_y, player_z)
     local radius_squared = radar_radius * radar_radius
     local nearby = {}
     local center_cell_x =
@@ -334,6 +352,10 @@ local function build_radar_json(player_x, player_y)
                     if distance_squared <= radius_squared then
                         table.insert(nearby, {
                             save_id = treasure.save_id,
+                            x = treasure.x,
+                            y = treasure.y,
+                            z = treasure.z or 0,
+                            has_z = treasure.has_z == true,
                             dx = delta_x,
                             dy = delta_y,
                             distance_squared = distance_squared,
@@ -351,7 +373,12 @@ local function build_radar_json(player_x, player_y)
     local count = math.min(#nearby, MAX_RADAR_POINTS)
     local parts = {
         string.format(
-            '{"enabled":true,"radius":%.3f,"points":[',
+            '{"enabled":true,"showHeight":%s,"showTreasureTypes":%s,"textScale":%.3f,"playerZ":%.3f,"hasPlayerZ":%s,"radius":%.3f,"points":[',
+            show_height and "true" or "false",
+            show_treasure_types and "true" or "false",
+            text_scale,
+            player_z or 0,
+            player_z ~= nil and "true" or "false",
             radar_radius
         ),
     }
@@ -361,8 +388,12 @@ local function build_radar_json(player_x, player_y)
             table.insert(parts, ",")
         end
         table.insert(parts, string.format(
-            '{"saveId":%d,"dx":%.3f,"dy":%.3f}',
+            '{"saveId":%d,"x":%.3f,"y":%.3f,"z":%.3f,"hasZ":%s,"dx":%.3f,"dy":%.3f}',
             point.save_id,
+            point.x,
+            point.y,
+            point.z,
+            point.has_z and "true" or "false",
             point.dx,
             point.dy
         ))
@@ -371,9 +402,9 @@ local function build_radar_json(player_x, player_y)
     return table.concat(parts)
 end
 
-local function build_world_map_json(map, player_x, player_y)
+local function build_world_map_json(map, player_x, player_y, player_z)
     return string.format(
-        '{"enabled":true,"mode":"world","worldMap":'
+        '{"enabled":true,"showHeight":%s,"showTreasureTypes":%s,"textScale":%.3f,"playerZ":%.3f,"hasPlayerZ":%s,"mode":"world","worldMap":'
             .. '{"mapId":%d,"dimensions":%.3f,'
             .. '"uiSize":%.3f,"left":%.3f,"top":%.3f,'
             .. '"zoom":%.6f,"viewportWidth":%.3f,'
@@ -381,6 +412,11 @@ local function build_world_map_json(map, player_x, player_y)
             .. '"playerWorldX":%.3f,"playerWorldY":%.3f,'
             .. '"playerMapX":%.3f,"playerMapY":%.3f},'
             .. '"points":[]}',
+        show_height and "true" or "false",
+        show_treasure_types and "true" or "false",
+        text_scale,
+        player_z or 0,
+        player_z ~= nil and "true" or "false",
         map.map_id,
         map.dimensions,
         map.ui_size,
@@ -402,37 +438,56 @@ local function update_radar_state()
         return
     end
 
+    local player_x, player_y, player_z = get_player_location()
+    if player_x == nil or player_y == nil then
+        engine = nil
+        minimap_layer = nil
+        minimap_mode = nil
+        world_map_was_active = false
+
+        if world_map_markers_enabled then
+            world_map.set_suspended(true)
+            map_resume_delay_remaining_ms =
+                MAP_LOAD_RESUME_DELAY_MS
+        end
+
+        write_disabled_state()
+        return
+    end
+
     local map_state = nil
     if world_map_markers_enabled then
         map_state = world_map.read_state()
     end
+
     local output
     if map_state ~= nil then
         world_map_was_active = true
-        local player_x, player_y = get_player_location()
-        if player_x == nil or player_y == nil then
-            return
-        end
         output = build_world_map_json(
             map_state,
             player_x,
-            player_y
+            player_y,
+            player_z
         )
     else
         world_map_was_active = false
 
-        local player_x, player_y = get_player_location()
-        if player_x == nil or player_y == nil then
-            return
-        end
-
         minimap_scale_elapsed_ms =
-            minimap_scale_elapsed_ms + MINIMAP_UPDATE_INTERVAL_MS
-        if minimap_scale_elapsed_ms >= MINIMAP_SCALE_CHECK_INTERVAL_MS then
+            minimap_scale_elapsed_ms
+                + MINIMAP_UPDATE_INTERVAL_MS
+
+        if minimap_scale_elapsed_ms
+            >= MINIMAP_SCALE_CHECK_INTERVAL_MS
+        then
             minimap_scale_elapsed_ms = 0
             update_radar_radius()
         end
-        output = build_radar_json(player_x, player_y)
+
+        output = build_radar_json(
+            player_x,
+            player_y,
+            player_z
+        )
     end
 
     local path = resolve_state_path()
@@ -458,13 +513,19 @@ end
 local ensure_world_map_loop_started
 
 local function queue_radar_update()
-    if not is_current_generation() or not enabled or update_pending then
+    if not is_current_generation()
+        or not enabled
+        or update_pending
+        or map_resume_delay_remaining_ms > 0
+    then
         return
     end
 
     update_pending = true
     ExecuteInGameThread(function()
-        if is_current_generation() then
+        if is_current_generation()
+            and map_resume_delay_remaining_ms <= 0
+        then
             pcall(update_radar_state)
         end
         update_pending = false
@@ -503,6 +564,23 @@ local function ensure_loop_started()
         if not is_current_generation() then
             return true
         end
+
+        if map_resume_delay_remaining_ms > 0 then
+            map_resume_delay_remaining_ms = math.max(
+                0,
+                map_resume_delay_remaining_ms
+                    - MINIMAP_UPDATE_INTERVAL_MS
+            )
+
+            if map_resume_delay_remaining_ms == 0
+                and world_map_markers_enabled
+            then
+                world_map.set_suspended(false)
+            end
+
+            return false
+        end
+
         queue_radar_update()
         if world_map_was_active then
             ensure_world_map_loop_started()

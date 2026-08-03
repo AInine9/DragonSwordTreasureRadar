@@ -24,6 +24,8 @@ namespace DragonSwordTreasureRadar
             new Dictionary<int, ulong>();
         private readonly SaveDatabaseKeyReader _keyReader =
             new SaveDatabaseKeyReader();
+        private readonly TreasureOverrides _overrides =
+            new TreasureOverrides();
 
         private DateTime _nextRefreshUtc;
         private DateTime _nextDatabaseDiscoveryUtc;
@@ -39,6 +41,7 @@ namespace DragonSwordTreasureRadar
         private int _version;
         private bool _hasLoadedSaveState;
         private bool _loadInProgress;
+        private int _lastOverrideVersion = -1;
 
         public int GameProcessId
         {
@@ -80,6 +83,22 @@ namespace DragonSwordTreasureRadar
             }
         }
 
+        public string DatabaseWriteSummary
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _lastDatabaseWriteUtc ==
+                        DateTime.MinValue
+                        ? "none"
+                        : _lastDatabaseWriteUtc.ToString(
+                            "O",
+                            CultureInfo.InvariantCulture);
+                }
+            }
+        }
+
         public int OpenedBitCount
         {
             get
@@ -109,6 +128,15 @@ namespace DragonSwordTreasureRadar
                 return false;
             }
 
+            bool ignored;
+            saveId = _overrides.Resolve(
+                saveId,
+                out ignored);
+            if (ignored)
+            {
+                return true;
+            }
+
             int category = (int)(saveId / 64);
             int bit = (int)(saveId % 64);
             lock (_sync)
@@ -119,8 +147,84 @@ namespace DragonSwordTreasureRadar
             }
         }
 
+        public string Describe(long sourceSaveId)
+        {
+            if (sourceSaveId <= 0)
+            {
+                return "invalidId";
+            }
+
+            bool ignored;
+            long resolvedSaveId = _overrides.Resolve(
+                sourceSaveId,
+                out ignored);
+
+            int sourceCategory =
+                (int)(sourceSaveId / 64);
+            int sourceBit =
+                (int)(sourceSaveId % 64);
+            int resolvedCategory =
+                (int)(resolvedSaveId / 64);
+            int resolvedBit =
+                (int)(resolvedSaveId % 64);
+
+            lock (_sync)
+            {
+                ulong sourceField;
+                bool hasSourceField = _opened.TryGetValue(
+                    sourceCategory,
+                    out sourceField);
+                bool sourceOpened = hasSourceField
+                    && (sourceField &
+                        (1UL << sourceBit)) != 0;
+
+                ulong resolvedField;
+                bool hasResolvedField = _opened.TryGetValue(
+                    resolvedCategory,
+                    out resolvedField);
+                bool resolvedOpened = ignored
+                    || (hasResolvedField
+                        && (resolvedField &
+                            (1UL << resolvedBit)) != 0);
+
+                return string.Format(
+                    CultureInfo.InvariantCulture,
+                    "source={0}; resolved={1}; ignored={2}; " +
+                    "sourceCategory={3}; sourceBit={4}; " +
+                    "sourceField={5}; sourceOpened={6}; " +
+                    "resolvedCategory={7}; resolvedBit={8}; " +
+                    "resolvedField={9}; opened={10}",
+                    sourceSaveId,
+                    resolvedSaveId,
+                    ignored,
+                    sourceCategory,
+                    sourceBit,
+                    hasSourceField
+                        ? "0x" + sourceField.ToString("X16")
+                        : "missing",
+                    sourceOpened,
+                    resolvedCategory,
+                    resolvedBit,
+                    hasResolvedField
+                        ? "0x" + resolvedField.ToString("X16")
+                        : "missing",
+                    resolvedOpened);
+            }
+        }
+
         public void Refresh()
         {
+            _overrides.Refresh();
+            int overrideVersion = _overrides.Version;
+            lock (_sync)
+            {
+                if (overrideVersion != _lastOverrideVersion)
+                {
+                    _lastOverrideVersion = overrideVersion;
+                    _version++;
+                }
+            }
+
             if (DateTime.UtcNow < _nextRefreshUtc)
             {
                 return;
@@ -219,6 +323,15 @@ namespace DragonSwordTreasureRadar
                         return;
                     }
 
+                    List<long> newlyOpened =
+                        FindNewlySetIds(
+                            _opened,
+                            opened);
+                    List<long> newlyClosed =
+                        FindNewlySetIds(
+                            opened,
+                            _opened);
+
                     _opened.Clear();
                     foreach (KeyValuePair<int, ulong> pair
                         in opened)
@@ -236,6 +349,10 @@ namespace DragonSwordTreasureRadar
                     LogDatabaseLoaded(
                         request.DatabasePath,
                         opened);
+                    LogDatabaseDelta(
+                        request.DatabasePath,
+                        newlyOpened,
+                        newlyClosed);
                 }
             }
             catch (Exception exception)
@@ -297,6 +414,27 @@ namespace DragonSwordTreasureRadar
                 _lastDatabaseSuccessLog = message;
                 ErrorLog.WriteDebug(message);
             }
+        }
+
+        private void LogDatabaseDelta(
+            string databasePath,
+            IList<long> newlyOpened,
+            IList<long> newlyClosed)
+        {
+            if (!DebugSettings.Enabled
+                || (newlyOpened.Count == 0
+                    && newlyClosed.Count == 0))
+            {
+                return;
+            }
+
+            ErrorLog.WriteDebug(
+                "Save-state bit delta: database=" +
+                SafeSlotName(databasePath) +
+                "; newlyOpened=" +
+                FormatIdList(newlyOpened) +
+                "; newlyClosed=" +
+                FormatIdList(newlyClosed));
         }
 
         private void LogRefreshError(Exception exception)
@@ -403,7 +541,26 @@ namespace DragonSwordTreasureRadar
                     "No slot database was found.",
                     saveRoot);
             }
-            return ordered[0];
+
+            IGrouping<string, string> activeSlot = ordered
+                .GroupBy(
+                    path => Path.Combine(
+                        Path.GetDirectoryName(path),
+                        Path.GetFileNameWithoutExtension(path)),
+                    StringComparer.OrdinalIgnoreCase)
+                .OrderByDescending(group =>
+                    group.Max(path =>
+                        File.GetLastWriteTimeUtc(path)))
+                .First();
+
+            // The game may write the live treasure state to either
+            // the .db or the .bak file. Always use the newest file in
+            // the active slot instead of forcing .db, otherwise newly
+            // opened chests can remain visible indefinitely.
+            return activeSlot
+                .OrderByDescending(
+                    path => File.GetLastWriteTimeUtc(path))
+                .First();
         }
 
         private static string BuildCandidateSummary(
@@ -514,6 +671,73 @@ namespace DragonSwordTreasureRadar
                     numberStart,
                     end - numberStart)
                 : null;
+        }
+
+        private static List<long> FindNewlySetIds(
+            IDictionary<int, ulong> previous,
+            IDictionary<int, ulong> current)
+        {
+            HashSet<int> categories =
+                new HashSet<int>(previous.Keys);
+            categories.UnionWith(current.Keys);
+
+            List<long> result = new List<long>();
+            foreach (int category in categories)
+            {
+                ulong previousField;
+                if (!previous.TryGetValue(
+                    category,
+                    out previousField))
+                {
+                    previousField = 0;
+                }
+
+                ulong currentField;
+                if (!current.TryGetValue(
+                    category,
+                    out currentField))
+                {
+                    currentField = 0;
+                }
+
+                ulong newlySet =
+                    currentField & ~previousField;
+                for (int bit = 0; bit < 64; bit++)
+                {
+                    if ((newlySet &
+                        (1UL << bit)) != 0)
+                    {
+                        result.Add(
+                            category * 64L + bit);
+                    }
+                }
+            }
+
+            result.Sort();
+            return result;
+        }
+
+        private static string FormatIdList(
+            IList<long> ids)
+        {
+            if (ids == null || ids.Count == 0)
+            {
+                return "none";
+            }
+
+            const int limit = 40;
+            string[] values = ids
+                .Take(limit)
+                .Select(id => id.ToString(
+                    CultureInfo.InvariantCulture))
+                .ToArray();
+            string result = string.Join(",", values);
+            return ids.Count > limit
+                ? result + ",...(" +
+                    ids.Count.ToString(
+                        CultureInfo.InvariantCulture) +
+                    " total)"
+                : result;
         }
 
         private static int CountOpenedBits(
