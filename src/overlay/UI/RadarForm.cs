@@ -37,6 +37,8 @@ namespace DragonSwordTreasureRadar
         private DateTime _stateAccessFailureSinceUtc;
         private DateTime _nextStateAccessFailureLogUtc;
         private float _displayScale = 1f;
+        private static readonly Color NearestHighlightColor =
+            Color.FromArgb(255, 255, 62, 200);
         private int _overlaySize = ReferenceOverlaySize;
         private string _lastGeometryLog;
         private string _lastSaveFilterLog;
@@ -130,7 +132,13 @@ namespace DragonSwordTreasureRadar
                 StringComparison.Ordinal)
                 && state.worldMap != null)
             {
-                DrawWorldMap(eventArgs.Graphics, state.worldMap);
+                DrawWorldMap(
+                    eventArgs.Graphics,
+                    state.worldMap,
+                    state.showHeight,
+                    state.showTreasureTypes,
+                    state.playerZ,
+                    state.hasPlayerZ);
                 return;
             }
             if (state.radius <= 0)
@@ -156,13 +164,21 @@ namespace DragonSwordTreasureRadar
                     state.radius,
                     radarRadius,
                     center,
-                    index == 0);
+                    index == 0,
+                    state.showHeight,
+                    state.showTreasureTypes,
+                    state.playerZ,
+                    state.hasPlayerZ);
             }
         }
 
         private void DrawWorldMap(
             Graphics graphics,
-            WorldMapState map)
+            WorldMapState map,
+            bool showHeight,
+            bool showTreasureTypes,
+            double playerZ,
+            bool hasPlayerZ)
         {
             if (!_saveState.HasLoadedSaveState
                 || map.dimensions <= 0
@@ -175,13 +191,19 @@ namespace DragonSwordTreasureRadar
                 return;
             }
 
+            bool showLabel = showHeight || showTreasureTypes;
+
             float windowScaleX =
                 ClientSize.Width / (float)map.viewportWidth;
             float windowScaleY =
                 ClientSize.Height / (float)map.viewportHeight;
             float coordinateScale = (float)map.viewportScale;
-            float diameter = Math.Max(6f, 10f * _displayScale);
-            float half = diameter / 2f;
+            float normalDiameter = Math.Max(
+                6f,
+                10f * _displayScale);
+            float nearestDiameter = Math.Max(
+                10f,
+                16f * _displayScale);
             RectangleF clip = new RectangleF(
                 0,
                 0,
@@ -190,8 +212,47 @@ namespace DragonSwordTreasureRadar
             GraphicsState saved = graphics.Save();
             graphics.SetClip(clip);
 
-            using (Brush brush = new SolidBrush(
-                Color.FromArgb(235, 90, 235, 255)))
+            WorldTreasure nearestTreasure = null;
+            float nearestX = 0f;
+            float nearestY = 0f;
+            double nearestDistanceSquared = double.MaxValue;
+
+            foreach (WorldTreasure treasure
+                in _visibleWorldTreasures)
+            {
+                if (treasure.MapId != map.mapId)
+                {
+                    continue;
+                }
+
+                float projectedX;
+                float projectedY;
+                if (!TryProjectWorldTreasure(
+                    treasure,
+                    map,
+                    coordinateScale,
+                    windowScaleX,
+                    windowScaleY,
+                    normalDiameter / 2f,
+                    out projectedX,
+                    out projectedY))
+                {
+                    continue;
+                }
+
+                double deltaX = treasure.X - map.playerWorldX;
+                double deltaY = treasure.Y - map.playerWorldY;
+                double distanceSquared =
+                    deltaX * deltaX + deltaY * deltaY;
+                if (distanceSquared < nearestDistanceSquared)
+                {
+                    nearestDistanceSquared = distanceSquared;
+                    nearestTreasure = treasure;
+                    nearestX = projectedX;
+                    nearestY = projectedY;
+                }
+            }
+
             using (Pen outline = new Pen(
                 Color.FromArgb(235, 5, 12, 22),
                 Math.Max(1f, 2f * _displayScale)))
@@ -204,39 +265,86 @@ namespace DragonSwordTreasureRadar
                         continue;
                     }
 
-                    double localX = map.playerMapX
-                        + (treasure.X - map.playerWorldX)
-                        / map.dimensions * map.uiSize;
-                    double localY = map.playerMapY
-                        + (treasure.Y - map.playerWorldY)
-                        / map.dimensions * map.uiSize;
-                    float x = (float)(
-                        (map.left + localX * map.zoom)
-                        * coordinateScale * windowScaleX);
-                    float y = (float)(
-                        (map.top + localY * map.zoom)
-                        * coordinateScale * windowScaleY);
-                    if (x < -half || x > ClientSize.Width + half
-                        || y < -half || y > ClientSize.Height + half)
+                    float x;
+                    float y;
+                    if (!TryProjectWorldTreasure(
+                        treasure,
+                        map,
+                        coordinateScale,
+                        windowScaleX,
+                        windowScaleY,
+                        nearestDiameter / 2f,
+                        out x,
+                        out y))
                     {
                         continue;
                     }
 
-                    graphics.FillEllipse(
-                        brush,
-                        x - half,
-                        y - half,
+                    bool nearest = object.ReferenceEquals(
+                        treasure,
+                        nearestTreasure);
+                    float diameter = nearest
+                        ? nearestDiameter
+                        : normalDiameter;
+                    Color color = GetTreasureColor(treasure);
+
+                    DrawTreasureMarker(
+                        graphics,
+                        x,
+                        y,
                         diameter,
-                        diameter);
-                    graphics.DrawEllipse(
-                        outline,
-                        x - half,
-                        y - half,
-                        diameter,
-                        diameter);
+                        color,
+                        nearest,
+                        outline);
                 }
             }
+
+            if (showLabel && nearestTreasure != null)
+            {
+                DrawNearestLabel(
+                    graphics,
+                    nearestX,
+                    nearestY,
+                    showHeight,
+                    showTreasureTypes,
+                    playerZ,
+                    hasPlayerZ,
+                    nearestTreasure.Z,
+                    nearestTreasure.HasZ,
+                    nearestTreasure.SaveId,
+                    nearestTreasure);
+            }
+
             graphics.Restore(saved);
+        }
+
+        private bool TryProjectWorldTreasure(
+            WorldTreasure treasure,
+            WorldMapState map,
+            float coordinateScale,
+            float windowScaleX,
+            float windowScaleY,
+            float margin,
+            out float x,
+            out float y)
+        {
+            double localX = map.playerMapX
+                + (treasure.X - map.playerWorldX)
+                / map.dimensions * map.uiSize;
+            double localY = map.playerMapY
+                + (treasure.Y - map.playerWorldY)
+                / map.dimensions * map.uiSize;
+            x = (float)(
+                (map.left + localX * map.zoom)
+                * coordinateScale * windowScaleX);
+            y = (float)(
+                (map.top + localY * map.zoom)
+                * coordinateScale * windowScaleY);
+
+            return x >= -margin
+                && x <= ClientSize.Width + margin
+                && y >= -margin
+                && y <= ClientSize.Height + margin;
         }
 
         private void ConfigureWindow()
@@ -288,7 +396,11 @@ namespace DragonSwordTreasureRadar
             double stateRadius,
             float radarRadius,
             float center,
-            bool nearest)
+            bool nearest,
+            bool showHeight,
+            bool showTreasureTypes,
+            double playerZ,
+            bool hasPlayerZ)
         {
             float x = center +
                 (float)(point.dx / stateRadius * radarRadius);
@@ -296,28 +408,241 @@ namespace DragonSwordTreasureRadar
                 (float)(point.dy / stateRadius * radarRadius);
             float diameter =
                 (nearest ? 16f : 10f) * _displayScale;
-            Color color = nearest
-                ? Color.FromArgb(255, 255, 190, 45)
-                : Color.FromArgb(235, 90, 235, 255);
+            WorldTreasure metadata =
+                _worldTreasures.FindBySaveId(point.saveId);
+            Color color = GetTreasureColor(metadata);
 
-            using (Brush brush = new SolidBrush(color))
             using (Pen outline = new Pen(
                 Color.FromArgb(235, 5, 12, 22),
                 Math.Max(1f, 2f * _displayScale)))
             {
-                graphics.FillEllipse(
-                    brush,
-                    x - diameter / 2,
-                    y - diameter / 2,
+                DrawTreasureMarker(
+                    graphics,
+                    x,
+                    y,
                     diameter,
-                    diameter);
+                    color,
+                    nearest,
+                    outline);
+            }
+
+            if (nearest && (showHeight || showTreasureTypes))
+            {
+                DrawNearestLabel(
+                    graphics,
+                    x,
+                    y,
+                    showHeight,
+                    showTreasureTypes,
+                    playerZ,
+                    hasPlayerZ,
+                    point.z,
+                    point.hasZ,
+                    point.saveId,
+                    metadata);
+            }
+        }
+
+        // The nearest marker uses a magenta ring while preserving the
+        // inner type color, so proximity and acquisition type remain visible.
+        private void DrawTreasureMarker(
+            Graphics graphics,
+            float centerX,
+            float centerY,
+            float diameter,
+            Color innerColor,
+            bool nearest,
+            Pen outline)
+        {
+            float half = diameter / 2f;
+
+            if (nearest)
+            {
+                using (Brush highlightBrush = new SolidBrush(
+                    NearestHighlightColor))
+                {
+                    graphics.FillEllipse(
+                        highlightBrush,
+                        centerX - half,
+                        centerY - half,
+                        diameter,
+                        diameter);
+                }
+
+                float ringThickness = Math.Max(
+                    2.5f,
+                    3.5f * _displayScale);
+                float innerDiameter = Math.Max(
+                    2f,
+                    diameter - ringThickness * 2f);
+                float innerHalf = innerDiameter / 2f;
+
+                using (Brush innerBrush = new SolidBrush(innerColor))
+                {
+                    graphics.FillEllipse(
+                        innerBrush,
+                        centerX - innerHalf,
+                        centerY - innerHalf,
+                        innerDiameter,
+                        innerDiameter);
+                }
                 graphics.DrawEllipse(
                     outline,
-                    x - diameter / 2,
-                    y - diameter / 2,
+                    centerX - innerHalf,
+                    centerY - innerHalf,
+                    innerDiameter,
+                    innerDiameter);
+                return;
+            }
+
+            using (Brush brush = new SolidBrush(innerColor))
+            {
+                graphics.FillEllipse(
+                    brush,
+                    centerX - half,
+                    centerY - half,
                     diameter,
                     diameter);
             }
+            graphics.DrawEllipse(
+                outline,
+                centerX - half,
+                centerY - half,
+                diameter,
+                diameter);
+        }
+
+        // Height and type labels are controlled by separate Lua settings;
+        // debug_logging only affects diagnostic output.
+        private void DrawNearestLabel(
+            Graphics graphics,
+            float anchorX,
+            float anchorY,
+            bool showHeight,
+            bool showTreasureTypes,
+            double playerZ,
+            bool hasPlayerZ,
+            double treasureZ,
+            bool hasTreasureZ,
+            long saveId,
+            WorldTreasure metadata)
+        {
+            string heightText = null;
+            if (showHeight)
+            {
+                string playerText = hasPlayerZ
+                    ? playerZ.ToString(
+                        "0",
+                        CultureInfo.InvariantCulture)
+                    : "?";
+                string treasureText = hasTreasureZ
+                    ? treasureZ.ToString(
+                        "0",
+                        CultureInfo.InvariantCulture)
+                    : "?";
+                heightText = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "({0}, {1})",
+                    playerText,
+                    treasureText);
+            }
+
+            string typeText = null;
+            if (showTreasureTypes)
+            {
+                typeText = metadata == null
+                    ? TreasureIdentity.GetDebugName(null, saveId)
+                    : metadata.DebugName;
+            }
+
+            string text = heightText == null
+                ? typeText
+                : typeText == null
+                    ? heightText
+                    : heightText + Environment.NewLine + typeText;
+            if (String.IsNullOrEmpty(text))
+            {
+                return;
+            }
+            Color textColor = GetTreasureColor(metadata);
+
+            float fontSize = Math.Max(
+                8f,
+                9f * _displayScale);
+            float offset = Math.Max(
+                8f,
+                10f * _displayScale);
+
+            using (Font font = new Font(
+                SystemFonts.MessageBoxFont.FontFamily,
+                fontSize,
+                FontStyle.Bold,
+                GraphicsUnit.Point))
+            {
+                SizeF measured = graphics.MeasureString(
+                    text,
+                    font);
+                float left = anchorX + offset;
+                float top = anchorY - measured.Height - offset;
+
+                if (left + measured.Width > ClientSize.Width)
+                {
+                    left = anchorX - measured.Width - offset;
+                }
+                if (left < 0f)
+                {
+                    left = 0f;
+                }
+                if (top < 0f)
+                {
+                    top = anchorY + offset;
+                }
+                if (top + measured.Height > ClientSize.Height)
+                {
+                    top = ClientSize.Height - measured.Height;
+                }
+
+                float shadowOffset = Math.Max(
+                    1f,
+                    1.5f * _displayScale);
+                using (Brush shadowBrush = new SolidBrush(
+                    Color.FromArgb(230, 0, 0, 0)))
+                using (Brush textBrush = new SolidBrush(
+                    textColor))
+                {
+                    graphics.DrawString(
+                        text,
+                        font,
+                        shadowBrush,
+                        left + shadowOffset,
+                        top + shadowOffset);
+                    graphics.DrawString(
+                        text,
+                        font,
+                        textBrush,
+                        left,
+                        top);
+                }
+            }
+        }
+
+        // Type colors intentionally describe acquisition mechanics, not rarity.
+        // MiniGame is green, Map is orange, and all other types are white.
+        private static Color GetTreasureColor(
+            WorldTreasure treasure)
+        {
+            TreasureKind kind = treasure == null
+                ? TreasureKind.Other
+                : treasure.Kind;
+            if (kind == TreasureKind.MiniGame)
+            {
+                return Color.FromArgb(255, 85, 235, 115);
+            }
+            if (kind == TreasureKind.Map)
+            {
+                return Color.FromArgb(255, 255, 165, 35);
+            }
+            return Color.FromArgb(245, 255, 255, 255);
         }
 
         private void RefreshState()
@@ -471,7 +796,7 @@ namespace DragonSwordTreasureRadar
             }
 
             _nextSaveFilterLogUtc =
-                DateTime.UtcNow.AddSeconds(1);
+                DateTime.UtcNow.AddSeconds(2);
             RadarState state = _state;
             List<RadarPoint> points =
                 state == null || state.points == null
@@ -479,27 +804,291 @@ namespace DragonSwordTreasureRadar
                     : state.points;
             int hidden = points.Count(
                 point => _saveState.IsOpened(point.saveId));
+            string mode = state == null
+                ? "none"
+                : state.mode ?? "minimap";
+            string playerZ = state != null
+                && state.hasPlayerZ
+                ? state.playerZ.ToString(
+                    "0",
+                    CultureInfo.InvariantCulture)
+                : "?";
+            string details = IsWorldMapMode()
+                ? BuildWorldMapDebugDetails(state)
+                : BuildRadarDebugDetails(points);
             string message = string.Format(
                 CultureInfo.InvariantCulture,
-                "Save-filter status: gameProcessId={0}; " +
-                "saveLoaded={1}; database={2}; openedBits={3}; " +
-                "radarEnabled={4}; radarPoints={5}; hidden={6}; " +
-                "visible={7}; lastError={8}",
+                "Treasure debug snapshot: mode={0}; " +
+                "gameProcessId={1}; saveLoaded={2}; " +
+                "database={3}; databaseWrite={4}; " +
+                "openedBits={5}; radarEnabled={6}; " +
+                "playerZ={7}; radarPoints={8}; hidden={9}; " +
+                "visible={10}; lastError={11}",
+                mode,
                 _saveState.GameProcessId,
                 _saveState.HasLoadedSaveState,
                 _saveState.DatabaseName,
+                _saveState.DatabaseWriteSummary,
                 _saveState.OpenedBitCount,
                 state != null && state.enabled,
+                playerZ,
                 points.Count,
                 hidden,
                 points.Count - hidden,
-                _saveState.LastErrorSummary);
+                _saveState.LastErrorSummary)
+                + Environment.NewLine
+                + details;
 
             if (message != _lastSaveFilterLog)
             {
                 _lastSaveFilterLog = message;
                 ErrorLog.WriteDebug(message);
             }
+        }
+
+        private string BuildRadarDebugDetails(
+            IList<RadarPoint> points)
+        {
+            if (points == null || points.Count == 0)
+            {
+                return "Nearby treasure details: none";
+            }
+
+            List<string> rows = new List<string>();
+            int count = Math.Min(points.Count, 12);
+            for (int index = 0; index < count; index++)
+            {
+                RadarPoint point = points[index];
+                double horizontal = Math.Sqrt(
+                    point.dx * point.dx +
+                    point.dy * point.dy);
+                rows.Add(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "  [{0}] name={1}; id={2}; uidName={3}; groupId={4}; " +
+                    "x={5:0}; y={6:0}; z={7}; " +
+                    "dxy={8:0}({9:0.0}m); dz={10}; {11}; overlaps={12}",
+                    index,
+                    GetDebugName(point.saveId),
+                    point.saveId,
+                    GetUidName(point.saveId),
+                    GetGroupId(point.saveId),
+                    point.x,
+                    point.y,
+                    point.hasZ
+                        ? point.z.ToString(
+                            "0",
+                            CultureInfo.InvariantCulture)
+                        : "?",
+                    horizontal,
+                    horizontal / 100.0,
+                    GetVerticalDeltaText(
+                        _state,
+                        point.z,
+                        point.hasZ),
+                    _saveState.Describe(point.saveId),
+                    FindRadarOverlapSummary(
+                        point,
+                        points)));
+            }
+
+            return "Nearby treasure details:"
+                + Environment.NewLine
+                + string.Join(
+                    Environment.NewLine,
+                    rows.ToArray());
+        }
+
+        private string BuildWorldMapDebugDetails(
+            RadarState state)
+        {
+            if (state == null || state.worldMap == null)
+            {
+                return "World-map treasure details: none";
+            }
+
+            WorldMapState map = state.worldMap;
+            List<WorldTreasure> nearest =
+                _worldTreasures.Points
+                    .Where(treasure =>
+                        treasure.MapId == map.mapId)
+                    .OrderBy(treasure =>
+                    {
+                        double deltaX =
+                            treasure.X - map.playerWorldX;
+                        double deltaY =
+                            treasure.Y - map.playerWorldY;
+                        return deltaX * deltaX +
+                            deltaY * deltaY;
+                    })
+                    .Take(12)
+                    .ToList();
+
+            if (nearest.Count == 0)
+            {
+                return "World-map treasure details: none";
+            }
+
+            List<string> rows = new List<string>();
+            for (int index = 0;
+                index < nearest.Count;
+                index++)
+            {
+                WorldTreasure treasure = nearest[index];
+                double deltaX =
+                    treasure.X - map.playerWorldX;
+                double deltaY =
+                    treasure.Y - map.playerWorldY;
+                double horizontal = Math.Sqrt(
+                    deltaX * deltaX +
+                    deltaY * deltaY);
+                rows.Add(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "  [{0}] name={1}; id={2}; uidName={3}; groupId={4}; " +
+                    "x={5:0}; y={6:0}; z={7}; " +
+                    "dxy={8:0}({9:0.0}m); dz={10}; {11}; overlaps={12}",
+                    index,
+                    treasure.DebugName,
+                    treasure.SaveId,
+                    treasure.UidName ?? "(missing)",
+                    treasure.GroupId,
+                    treasure.X,
+                    treasure.Y,
+                    treasure.HasZ
+                        ? treasure.Z.ToString(
+                            "0",
+                            CultureInfo.InvariantCulture)
+                        : "?",
+                    horizontal,
+                    horizontal / 100.0,
+                    GetVerticalDeltaText(
+                        state,
+                        treasure.Z,
+                        treasure.HasZ),
+                    _saveState.Describe(
+                        treasure.SaveId),
+                    FindWorldOverlapSummary(
+                        treasure,
+                        nearest)));
+            }
+
+            return "World-map treasure details:"
+                + Environment.NewLine
+                + string.Join(
+                    Environment.NewLine,
+                    rows.ToArray());
+        }
+
+        private string GetDebugName(long saveId)
+        {
+            WorldTreasure metadata =
+                _worldTreasures.FindBySaveId(saveId);
+            return metadata == null
+                ? TreasureIdentity.GetDebugName(null, saveId)
+                : metadata.DebugName;
+        }
+
+        private string GetUidName(long saveId)
+        {
+            WorldTreasure metadata =
+                _worldTreasures.FindBySaveId(saveId);
+            return metadata == null
+                || String.IsNullOrWhiteSpace(metadata.UidName)
+                ? "(missing)"
+                : metadata.UidName;
+        }
+
+        private long GetGroupId(long saveId)
+        {
+            WorldTreasure metadata =
+                _worldTreasures.FindBySaveId(saveId);
+            return metadata == null
+                ? 0
+                : metadata.GroupId;
+        }
+
+        private static string GetVerticalDeltaText(
+            RadarState state,
+            double treasureZ,
+            bool hasTreasureZ)
+        {
+            if (state == null
+                || !state.hasPlayerZ
+                || !hasTreasureZ)
+            {
+                return "?";
+            }
+
+            return (treasureZ - state.playerZ).ToString(
+                "0",
+                CultureInfo.InvariantCulture);
+        }
+
+        private static string FindRadarOverlapSummary(
+            RadarPoint source,
+            IEnumerable<RadarPoint> points)
+        {
+            string[] overlaps = points
+                .Where(candidate =>
+                    !object.ReferenceEquals(candidate, source)
+                    && CandidateIsClose(
+                        source.x,
+                        source.y,
+                        candidate.x,
+                        candidate.y))
+                .Take(5)
+                .Select(candidate => string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0}@z{1}",
+                    candidate.saveId,
+                    candidate.hasZ
+                        ? candidate.z.ToString(
+                            "0",
+                            CultureInfo.InvariantCulture)
+                        : "?"))
+                .ToArray();
+            return overlaps.Length == 0
+                ? "none"
+                : string.Join(",", overlaps);
+        }
+
+        private static string FindWorldOverlapSummary(
+            WorldTreasure source,
+            IEnumerable<WorldTreasure> points)
+        {
+            string[] overlaps = points
+                .Where(candidate =>
+                    !object.ReferenceEquals(candidate, source)
+                    && CandidateIsClose(
+                        source.X,
+                        source.Y,
+                        candidate.X,
+                        candidate.Y))
+                .Take(5)
+                .Select(candidate => string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0}@z{1}",
+                    candidate.SaveId,
+                    candidate.HasZ
+                        ? candidate.Z.ToString(
+                            "0",
+                            CultureInfo.InvariantCulture)
+                        : "?"))
+                .ToArray();
+            return overlaps.Length == 0
+                ? "none"
+                : string.Join(",", overlaps);
+        }
+
+        private static bool CandidateIsClose(
+            double leftX,
+            double leftY,
+            double rightX,
+            double rightY)
+        {
+            double deltaX = leftX - rightX;
+            double deltaY = leftY - rightY;
+            return deltaX * deltaX + deltaY * deltaY
+                <= 250.0 * 250.0;
         }
 
         private void MoveOverGameWindow()

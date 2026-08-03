@@ -1,0 +1,22 @@
+# Treasure Radar override rules
+#
+# Ignore a treasure by its full save-state ID:
+#   ignore 10220122
+#
+# Ignore a treasure by the short type label shown by the radar:
+#   ignore U_10222
+#
+# A short label can match more than one duplicate data row. In that case,
+# every matching row is ignored.
+#
+# Map one duplicate source ID to the authoritative save-state ID:
+#   alias 11003 14016
+#
+# Alias rules currently require full numeric IDs.
+
+# Known abandoned duplicate: 11003 overlaps 14016 at the same chest location.
+# Keep the authoritative 14016 record and suppress the offset duplicate.
+ignore 11003
+
+# Known abandoned or inaccessible chest record.
+ignore 10220122
