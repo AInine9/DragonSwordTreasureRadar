@@ -6,7 +6,7 @@ return {
     -- Display settings are independent from debug logging.
     -- Show a 180-degree height pointer for the nearest treasure.
     show_height = true,
-    show_treasure_types = true,
+    show_treasure_types = false,
     -- Scale treasure type and debug coordinate text (1.0 = default).
     text_scale = 1.0,
 
