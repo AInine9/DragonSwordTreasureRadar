@@ -409,6 +409,9 @@ local function build_world_map_json(map, player_x, player_y, player_z)
             .. '"uiSize":%.3f,"left":%.3f,"top":%.3f,'
             .. '"zoom":%.6f,"viewportWidth":%.3f,'
             .. '"viewportHeight":%.3f,"viewportScale":%.6f,'
+            .. '"hasViewportTransform":%s,'
+            .. '"viewportOriginX":%.9f,"viewportOriginY":%.9f,'
+            .. '"viewportAxisX":%.9f,"viewportAxisY":%.9f,'
             .. '"playerWorldX":%.3f,"playerWorldY":%.3f,'
             .. '"playerMapX":%.3f,"playerMapY":%.3f},'
             .. '"points":[]}',
@@ -426,6 +429,11 @@ local function build_world_map_json(map, player_x, player_y, player_z)
         map.viewport_width,
         map.viewport_height,
         map.viewport_scale,
+        map.has_viewport_transform and "true" or "false",
+        map.viewport_origin_x,
+        map.viewport_origin_y,
+        map.viewport_axis_x,
+        map.viewport_axis_y,
         player_x,
         player_y,
         map.player_map_x,

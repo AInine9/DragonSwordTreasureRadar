@@ -209,11 +209,8 @@ namespace DragonSwordTreasureRadar
             bool showLabel =
                 showDebugCoordinates || showTreasureTypes;
 
-            float windowScaleX =
-                ClientSize.Width / (float)map.viewportWidth;
-            float windowScaleY =
-                ClientSize.Height / (float)map.viewportHeight;
-            float coordinateScale = (float)map.viewportScale;
+            WorldMapProjection projection =
+                CreateWorldMapProjection(map);
             float normalDiameter = Math.Max(
                 6f,
                 10f * _displayScale);
@@ -246,9 +243,7 @@ namespace DragonSwordTreasureRadar
                 if (!TryProjectWorldTreasure(
                     treasure,
                     map,
-                    coordinateScale,
-                    windowScaleX,
-                    windowScaleY,
+                    projection,
                     normalDiameter / 2f,
                     out projectedX,
                     out projectedY))
@@ -286,9 +281,7 @@ namespace DragonSwordTreasureRadar
                     if (!TryProjectWorldTreasure(
                         treasure,
                         map,
-                        coordinateScale,
-                        windowScaleX,
-                        windowScaleY,
+                        projection,
                         nearestDiameter / 2f,
                         out x,
                         out y))
@@ -357,9 +350,7 @@ namespace DragonSwordTreasureRadar
         private bool TryProjectWorldTreasure(
             WorldTreasure treasure,
             WorldMapState map,
-            float coordinateScale,
-            float windowScaleX,
-            float windowScaleY,
+            WorldMapProjection projection,
             float margin,
             out float x,
             out float y)
@@ -370,17 +361,82 @@ namespace DragonSwordTreasureRadar
             double localY = map.playerMapY
                 + (treasure.Y - map.playerWorldY)
                 / map.dimensions * map.uiSize;
-            x = (float)(
-                (map.left + localX * map.zoom)
-                * coordinateScale * windowScaleX);
-            y = (float)(
-                (map.top + localY * map.zoom)
-                * coordinateScale * windowScaleY);
+            x = projection.OffsetX
+                + (float)localX * projection.ScaleX;
+            y = projection.OffsetY
+                + (float)localY * projection.ScaleY;
 
             return x >= -margin
                 && x <= ClientSize.Width + margin
                 && y >= -margin
                 && y <= ClientSize.Height + margin;
+        }
+
+        private WorldMapProjection CreateWorldMapProjection(
+            WorldMapState map)
+        {
+            if (map.hasViewportTransform
+                && IsFinite(map.viewportOriginX)
+                && IsFinite(map.viewportOriginY)
+                && IsFinite(map.viewportAxisX)
+                && IsFinite(map.viewportAxisY)
+                && map.viewportAxisX > 0
+                && map.viewportAxisY > 0)
+            {
+                return new WorldMapProjection
+                {
+                    OffsetX =
+                        (float)(map.viewportOriginX * ClientSize.Width),
+                    OffsetY =
+                        (float)(map.viewportOriginY * ClientSize.Height),
+                    ScaleX =
+                        (float)(map.viewportAxisX * ClientSize.Width),
+                    ScaleY =
+                        (float)(map.viewportAxisY * ClientSize.Height)
+                };
+            }
+
+            // The overlay and the Unreal viewport can report different
+            // aspect ratios in ultrawide and windowed modes. Preserve the
+            // viewport aspect ratio and center it instead of stretching X
+            // and Y independently.
+            float fitScale = Math.Min(
+                ClientSize.Width / (float)map.viewportWidth,
+                ClientSize.Height / (float)map.viewportHeight);
+            float fittedWidth =
+                (float)map.viewportWidth * fitScale;
+            float fittedHeight =
+                (float)map.viewportHeight * fitScale;
+            float coordinateScale =
+                (float)map.viewportScale * fitScale;
+
+            return new WorldMapProjection
+            {
+                OffsetX =
+                    (ClientSize.Width - fittedWidth) / 2f
+                    + (float)map.left * coordinateScale,
+                OffsetY =
+                    (ClientSize.Height - fittedHeight) / 2f
+                    + (float)map.top * coordinateScale,
+                ScaleX =
+                    (float)map.zoom * coordinateScale,
+                ScaleY =
+                    (float)map.zoom * coordinateScale
+            };
+        }
+
+        private static bool IsFinite(double value)
+        {
+            return !Double.IsNaN(value)
+                && !Double.IsInfinity(value);
+        }
+
+        private struct WorldMapProjection
+        {
+            public float OffsetX;
+            public float OffsetY;
+            public float ScaleX;
+            public float ScaleY;
         }
 
         private void ConfigureWindow()

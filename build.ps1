@@ -1,20 +1,14 @@
+param(
+    [string]$Version = "",
+    [string]$SigningCertificateThumbprint = "",
+    [string]$TimestampUrl = "https://timestamp.digicert.com"
+)
+
 $ErrorActionPreference = "Stop"
 
 $OutputRoot = Join-Path $PSScriptRoot "dist"
 $compiler = Join-Path $env:WINDIR `
     "Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-$overlaySources = Get-ChildItem `
-    -LiteralPath (Join-Path $PSScriptRoot "src\overlay") `
-    -Filter "*.cs" `
-    -Recurse |
-    Sort-Object FullName |
-    Select-Object -ExpandProperty FullName
-$installerSources = Get-ChildItem `
-    -LiteralPath (Join-Path $PSScriptRoot "src\installer") `
-    -Filter "*.cs" `
-    -Recurse |
-    Sort-Object FullName |
-    Select-Object -ExpandProperty FullName
 $luaSource = Join-Path $PSScriptRoot "src\ue4ss"
 $overrideSource = Join-Path $PSScriptRoot `
     "src\resources\treasure_overrides.txt"
@@ -28,6 +22,117 @@ $sourceRoot = Join-Path $OutputRoot "source\ooz"
 $installer = Join-Path $OutputRoot `
     "DragonSwordTreasureRadarInstaller.exe"
 $archive = Join-Path $OutputRoot "DragonSwordTreasureRadar.zip"
+$archiveChecksum = $archive + ".sha256"
+$generatedRoot = Join-Path $OutputRoot "generated"
+
+function Resolve-BuildVersion {
+    param([string]$RequestedVersion)
+
+    $informationalVersion = $RequestedVersion.Trim()
+    if ($informationalVersion.Length -eq 0) {
+        $informationalVersion = (& git -C $PSScriptRoot describe `
+            --tags --always --dirty 2>$null).Trim()
+        if ($LASTEXITCODE -ne 0 `
+            -or $informationalVersion.Length -eq 0) {
+            throw "Specify the release version with -Version, for example -Version 1.6.2."
+        }
+    }
+
+    $informationalVersion = $informationalVersion.TrimStart("v")
+    if ($informationalVersion -notmatch `
+        '^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:\.(?<revision>\d+))?(?:[-+][0-9A-Za-z.+-]+)?$') {
+        throw "Invalid build version: $informationalVersion"
+    }
+
+    $revision = if ($Matches.revision) {
+        $Matches.revision
+    }
+    else {
+        "0"
+    }
+
+    return [PSCustomObject]@{
+        Assembly = "{0}.{1}.{2}.{3}" -f `
+            $Matches.major,
+            $Matches.minor,
+            $Matches.patch,
+            $revision
+        Informational = $informationalVersion
+    }
+}
+
+function Write-AssemblyInfo {
+    param(
+        [string]$Path,
+        [string]$Title,
+        [string]$Description,
+        [string]$Product,
+        [PSCustomObject]$BuildVersion
+    )
+
+    $source = @"
+using System.Reflection;
+using System.Runtime.InteropServices;
+
+[assembly: AssemblyTitle("$Title")]
+[assembly: AssemblyDescription("$Description")]
+[assembly: AssemblyCompany("AInine")]
+[assembly: AssemblyProduct("$Product")]
+[assembly: AssemblyCopyright("Copyright (c) AInine")]
+[assembly: AssemblyVersion("$($BuildVersion.Assembly)")]
+[assembly: AssemblyFileVersion("$($BuildVersion.Assembly)")]
+[assembly: AssemblyInformationalVersion("$($BuildVersion.Informational)")]
+[assembly: ComVisible(false)]
+"@
+
+    [System.IO.File]::WriteAllText(
+        $Path,
+        $source,
+        [System.Text.UTF8Encoding]::new($false))
+}
+
+function Find-SignTool {
+    $command = Get-Command "signtool.exe" -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+
+    $kitsRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+    if (-not (Test-Path -LiteralPath $kitsRoot)) {
+        return $null
+    }
+
+    return Get-ChildItem -LiteralPath $kitsRoot -Directory |
+        Sort-Object Name -Descending |
+        ForEach-Object {
+            Join-Path $_.FullName "x64\signtool.exe"
+        } |
+        Where-Object { Test-Path -LiteralPath $_ } |
+        Select-Object -First 1
+}
+
+function Sign-Binary {
+    param(
+        [string]$SignTool,
+        [string]$Thumbprint,
+        [string]$Path
+    )
+
+    & $SignTool sign `
+        /sha1 $Thumbprint `
+        /fd SHA256 `
+        /tr $TimestampUrl `
+        /td SHA256 `
+        $Path
+    if ($LASTEXITCODE -ne 0) {
+        throw "Authenticode signing failed for $Path."
+    }
+
+    & $SignTool verify /pa $Path
+    if ($LASTEXITCODE -ne 0) {
+        throw "Authenticode verification failed for $Path."
+    }
+}
 
 if (-not (Test-Path -LiteralPath $compiler)) {
     throw "The .NET Framework x64 C# compiler was not found: $compiler"
@@ -46,7 +151,46 @@ if (Test-Path -LiteralPath $OutputRoot) {
     Remove-Item -LiteralPath $OutputRoot -Recurse -Force
 }
 New-Item -ItemType Directory -Path `
-    $scriptsRoot, $toolsRoot, $sourceRoot -Force | Out-Null
+    $scriptsRoot, $toolsRoot, $sourceRoot, $generatedRoot `
+    -Force | Out-Null
+
+$buildVersion = Resolve-BuildVersion $Version
+$overlayAssemblyInfo = Join-Path $generatedRoot `
+    "OverlayAssemblyInfo.cs"
+$installerAssemblyInfo = Join-Path $generatedRoot `
+    "InstallerAssemblyInfo.cs"
+
+Write-AssemblyInfo `
+    -Path $overlayAssemblyInfo `
+    -Title "DragonSword Treasure Radar" `
+    -Description "External treasure radar for DragonSword: Awakening" `
+    -Product "DragonSword Treasure Radar" `
+    -BuildVersion $buildVersion
+Write-AssemblyInfo `
+    -Path $installerAssemblyInfo `
+    -Title "DragonSword Treasure Radar Installer" `
+    -Description "Installer for DragonSword Treasure Radar" `
+    -Product "DragonSword Treasure Radar" `
+    -BuildVersion $buildVersion
+
+$overlaySources = @(
+    Get-ChildItem `
+        -LiteralPath (Join-Path $PSScriptRoot "src\overlay") `
+        -Filter "*.cs" `
+        -Recurse |
+        Sort-Object FullName |
+        Select-Object -ExpandProperty FullName
+    $overlayAssemblyInfo
+)
+$installerSources = @(
+    Get-ChildItem `
+        -LiteralPath (Join-Path $PSScriptRoot "src\installer") `
+        -Filter "*.cs" `
+        -Recurse |
+        Sort-Object FullName |
+        Select-Object -ExpandProperty FullName
+    $installerAssemblyInfo
+)
 
 & $compiler `
     /nologo `
@@ -77,6 +221,23 @@ if ($LASTEXITCODE -ne 0) {
     $installerSources
 if ($LASTEXITCODE -ne 0) {
     throw "Installer compilation failed with exit code $LASTEXITCODE."
+}
+
+if (-not [String]::IsNullOrWhiteSpace(
+    $SigningCertificateThumbprint)) {
+    $signTool = Find-SignTool
+    if (-not $signTool) {
+        throw "signtool.exe was not found. Install the Windows SDK before signing."
+    }
+
+    Sign-Binary `
+        -SignTool $signTool `
+        -Thumbprint $SigningCertificateThumbprint `
+        -Path (Join-Path $modRoot "DragonSwordTreasureRadar.exe")
+    Sign-Binary `
+        -SignTool $signTool `
+        -Thumbprint $SigningCertificateThumbprint `
+        -Path $installer
 }
 
 Copy-Item -LiteralPath $sqlCipher -Destination $modRoot
@@ -128,5 +289,19 @@ Compress-Archive `
     -DestinationPath $archive `
     -CompressionLevel Optimal
 
+$archiveHash = (Get-FileHash `
+    -LiteralPath $archive `
+    -Algorithm SHA256).Hash.ToLowerInvariant()
+[System.IO.File]::WriteAllText(
+    $archiveChecksum,
+    "$archiveHash *$(Split-Path -Leaf $archive)`n",
+    [System.Text.ASCIIEncoding]::new())
+
 Write-Output "Built: $installer"
 Write-Output "Archive: $archive"
+Write-Output "Checksum: $archiveChecksum"
+Write-Output "Version: $($buildVersion.Informational)"
+if ([String]::IsNullOrWhiteSpace(
+    $SigningCertificateThumbprint)) {
+    Write-Warning "The executables are unsigned. Authenticode signing is recommended for public releases."
+}

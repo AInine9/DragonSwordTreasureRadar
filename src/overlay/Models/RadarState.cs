@@ -38,6 +38,11 @@ namespace DragonSwordTreasureRadar
         public double viewportWidth { get; set; }
         public double viewportHeight { get; set; }
         public double viewportScale { get; set; }
+        public bool hasViewportTransform { get; set; }
+        public double viewportOriginX { get; set; }
+        public double viewportOriginY { get; set; }
+        public double viewportAxisX { get; set; }
+        public double viewportAxisY { get; set; }
         public double playerWorldX { get; set; }
         public double playerWorldY { get; set; }
         public double playerMapX { get; set; }

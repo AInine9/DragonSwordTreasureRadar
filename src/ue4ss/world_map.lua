@@ -218,6 +218,56 @@ local function get_map_data(map_id)
     return nil
 end
 
+local function read_canvas_transform(layer, overlay, state)
+    local outside_slot = safe_get(layer, "MapOverlayOutSideSlot")
+    local size_ok, content_size = safe_call(
+        outside_slot,
+        "GetSize"
+    )
+
+    if not size_ok or content_size == nil then
+        size_ok, content_size = safe_call(
+            overlay,
+            "GetDesiredSize"
+        )
+    end
+
+    local values_ok, transform = pcall(function()
+        local content_width = tonumber(content_size.X)
+        local content_height = tonumber(content_size.Y)
+        if content_width == nil or content_width <= 0.0
+            or content_height == nil or content_height <= 0.0
+        then
+            return nil
+        end
+
+        return {
+            origin_x = (
+                state.left
+                    + (content_width - state.ui_size)
+                    * 0.5
+                    * state.zoom
+            ) * state.viewport_scale
+                / state.viewport_width,
+            origin_y = (
+                state.top
+                    + (content_height - state.ui_size)
+                    * 0.5
+                    * state.zoom
+            ) * state.viewport_scale
+                / state.viewport_height,
+            scale_x = state.zoom
+                * state.viewport_scale
+                / state.viewport_width,
+            scale_y = state.zoom
+                * state.viewport_scale
+                / state.viewport_height,
+        }
+    end)
+
+    return values_ok and transform or nil
+end
+
 function WorldMap.reset()
     -- Drop every UObject wrapper retained from the previous world.
     cached_layer = nil
@@ -375,6 +425,21 @@ function WorldMap.read_state()
     then
         return nil
     end
+
+    local viewport_transform = read_canvas_transform(
+        layer,
+        overlay,
+        state
+    )
+    state.has_viewport_transform = viewport_transform ~= nil
+    state.viewport_origin_x = viewport_transform ~= nil
+        and viewport_transform.origin_x or 0.0
+    state.viewport_origin_y = viewport_transform ~= nil
+        and viewport_transform.origin_y or 0.0
+    state.viewport_axis_x = viewport_transform ~= nil
+        and viewport_transform.scale_x or 0.0
+    state.viewport_axis_y = viewport_transform ~= nil
+        and viewport_transform.scale_y or 0.0
 
     return state
 end
