@@ -77,7 +77,10 @@ local function is_world_map_layer(layer)
     local name = full_name(layer)
 
     return string.find(name, "/Engine/Transient", 1, true) ~= nil
-        and string.find(name, ".DPanelWorldMap_C.", 1, true) ~= nil
+        -- The generated Blueprint class suffix can change between game
+        -- updates. Match the stable native panel name without requiring the
+        -- old exact ".DPanelWorldMap_C." owner path.
+        and string.find(name, "DPanelWorldMap", 1, true) ~= nil
 end
 
 local function remember_world_map_layer(layer)
