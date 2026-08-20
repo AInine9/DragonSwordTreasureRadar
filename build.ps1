@@ -287,7 +287,7 @@ $archiveInputs = @(
 Compress-Archive `
     -LiteralPath $archiveInputs `
     -DestinationPath $archive `
-    -CompressionLevel Optimal
+    -CompressionLevel Fastest
 
 $archiveHash = (Get-FileHash `
     -LiteralPath $archive `
