@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 
 namespace DragonSwordTreasureRadar
@@ -34,7 +34,7 @@ namespace DragonSwordTreasureRadar
             try
             {
                 string path = Path.Combine(
-                    AppDomain.CurrentDomain.BaseDirectory,
+                    RuntimePaths.BaseDirectory,
                     "scripts",
                     "config.lua");
                 if (!File.Exists(path))

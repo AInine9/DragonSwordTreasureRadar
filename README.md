@@ -1,59 +1,76 @@
 # DragonSword Treasure Radar
 
-Source code for an external treasure radar for DragonSword: Awakening.
+An unofficial treasure radar for DragonSword: Awakening.
 
-The project uses a UE4SS Lua script to report game and map state to a separate
-Windows overlay. The overlay positions uncollected treasure markers over the
-in-game minimap and world map, and reads the local save database in read-only
-mode to hide collected treasures.
+**v2.0.0** displays uncollected treasure markers directly on the in-game minimap
+and world map. It runs through UE4SS using DLLs and Lua; no separate overlay,
+installer EXE, or companion process is required.
 
-Compiled packages are distributed through GitHub Releases. The repository and
-release packages do not contain extracted game data, encryption keys, treasure
-coordinates, save data, or game assets. Treasure-location data is generated
-locally from the user's own game files during installation.
+## Features
 
-## Repository layout
+- White, green, and orange circle markers matching the original radar.
+- A simple up/down arrow for the nearest treasure, hidden at similar height.
+- Collected treasures disappear automatically using read-only save data.
+- World-map markers follow panning and zooming, with updates every 50 ms.
+- Treasure data is generated locally from your own game files and refreshed
+  after game updates. Save-key discovery no longer depends on one fixed field offset.
 
-```text
-src\installer\       Installer source
-src\overlay\         External overlay source
-src\ue4ss\           UE4SS Lua source
-third_party\ooz\     GPL-licensed ooz source
-tools\               Dependency and build helpers
-licenses\            Third-party license texts
-```
+## Requirements
 
-## Third-party software
+- Windows x64 and DragonSword: Awakening (Steam).
+- A working UE4SS installation compatible with the game.
+- .NET Framework 4.x.
 
-Third-party components and their licenses are documented in
-[THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
+UE4SS is not bundled. The current release was tested on Steam build 25202218.
+Future changes to the game, UE4SS, PAK files, or save format may require updates.
+
+## Install or upgrade from v1.x
+
+1. Close the game and the old external radar.
+2. Disable the old mod in `DS\Binaries\Win64\Mods\mods.txt`:
+   `DragonSwordTreasureMap : 0`. Stop using the old radar launcher.
+3. Download `DragonSwordTreasureRadar-v2.0.0.zip` from
+   [GitHub Releases](https://github.com/AInine9/DragonSwordTreasureRadar/releases/latest)
+   and copy its `Mods` folder into `DS\Binaries\Win64`.
+4. In `DS\Binaries\Win64\UE4SS-settings.ini`, set `GuiConsoleEnabled = 0`
+   under `[Debug]`. The radar does not need the debug GUI; leaving it enabled
+   can cause a UE4SS Live View freeze while moving.
+5. Start the game, load a save, and open each region's world map for a few seconds
+   on first use. Map settings are cached for later launches. Repeat this after
+   a game update.
+
+Press **F8** to show or hide markers. Distance labels from v1.x are not included.
+
+To uninstall, close the game and remove `Mods\DragonSwordTreasureNative`.
+Re-enable the old mod only when returning to v1.x.
+
+## Compatibility
+
+Minimap and world-map placement was checked at 1280×720, 1280×960, 1600×1000,
+1920×810, 1920×1080, and 2560×1440. The world map was also checked with a
+3840×2160 viewport, using internal coordinates and the visible screen area.
+Other regions and long play sessions have not been exhaustively tested.
+
+Save files are never modified. Release packages contain no extracted game data,
+treasure coordinates, encryption keys, or user saves. Local cache files are
+created on your computer.
+
+## Source and licenses
+
+See [BUILD.md](BUILD.md) for rebuilding the DLL-based release and
+[THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) for third-party licenses.
+Legacy installer and overlay sources remain in the repository; v2.0.0 uses
+`src/inprocess` and shared data-reading code.
 
 ## Disclaimer
 
-This is an unofficial project provided without warranty. It is not affiliated
-with or endorsed by HOUND13 or the game's publishers.
+This is an unofficial community mod, not affiliated with or endorsed by HOUND13
+or the game's publishers. It is provided without warranty. Use a vanilla game
+installation for co-op.
 
-## Link
+## Nexus Mods
+
 https://www.nexusmods.com/dragonswordawakening/mods/63
+
 I have not shared the GitHub URL anywhere other than Nexus Mods.
-If you see it posted on any other site, please be aware that it was not shared by me.
-
-## How to Build
-### Requirements
-- Windows PowerShell
-- .NET Framework x64 C# compiler:
-`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe`
-  - A Windows x64 C++ compiler compatible with clang++The release build uses llvm-mingw
-
-### Build Steps
-- Clone the repository
-- Download the Windows x64 SQLCipher runtime:
-`powershell -ExecutionPolicy Bypass -File .\tools\get-sqlcipher.ps1`
-- Build ooz.exe using a Windows x64 clang++ compiler:
-```
-powershell -ExecutionPolicy Bypass -File .\tools\build-ooz.ps1 `
-    -CompilerPath "C:\llvm-mingw\bin\clang++.exe"
-```
-  - Replace the compiler path with the location of clang++.exe on your system.
-- Build the overlay, installer, and release package:
-`powershell -ExecutionPolicy Bypass -File .\build.ps1`
+If you see it posted on any other site, it was not shared by me.

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -25,8 +25,8 @@ namespace DragonSwordTreasureRadar
         public WorldTreasureCatalog()
         {
             _path = Path.Combine(
-                AppDomain.CurrentDomain.BaseDirectory,
-                "scripts",
+                RuntimePaths.BaseDirectory,
+                RuntimePaths.CatalogFolder,
                 "treasures.lua");
         }
 

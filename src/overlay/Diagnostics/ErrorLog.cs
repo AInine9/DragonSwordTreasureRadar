@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 
 namespace DragonSwordTreasureRadar
@@ -6,7 +6,7 @@ namespace DragonSwordTreasureRadar
     internal static class ErrorLog
     {
         public static readonly string Path = System.IO.Path.Combine(
-            AppDomain.CurrentDomain.BaseDirectory,
+            RuntimePaths.BaseDirectory,
             "DragonSwordTreasureRadar.log");
 
         public static void Write(

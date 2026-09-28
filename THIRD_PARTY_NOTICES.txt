@@ -25,4 +25,5 @@ Licensed under the GNU General Public License, version 3 or later.
 https://github.com/powzix/ooz
 
 The full GPL license is included in LICENSE-GPL-3.0.txt. The complete
-corresponding source used to build ooz.exe is included in source\ooz.
+corresponding source linked into radar_native.dll is included in source\third_party\ooz,
+with the native bridge and build script under source.

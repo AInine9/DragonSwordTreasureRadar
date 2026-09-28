@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -259,7 +259,6 @@ namespace DragonSwordTreasureRadar
 
         private void RefreshFromGame(Process game)
         {
-            string key = _keyReader.Read(game);
             string candidateSummary;
             string databasePath = FindNewestSaveDatabaseCached(
                 game,
@@ -267,6 +266,11 @@ namespace DragonSwordTreasureRadar
             LogDatabaseSelection(
                 databasePath,
                 candidateSummary);
+
+            string key = _keyReader.Read(game, databasePath, delegate(string candidate)
+            {
+                ReadOpenedTreasureBits(databasePath, candidate);
+            });
 
             DateTime writeTime =
                 File.GetLastWriteTimeUtc(databasePath);

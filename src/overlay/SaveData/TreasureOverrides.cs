@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -12,11 +12,11 @@ namespace DragonSwordTreasureRadar
 
         private readonly object _sync = new object();
         private readonly string _path = Path.Combine(
-            AppDomain.CurrentDomain.BaseDirectory,
+            RuntimePaths.BaseDirectory,
             "treasure_overrides.txt");
         private readonly string _catalogPath = Path.Combine(
-            AppDomain.CurrentDomain.BaseDirectory,
-            "scripts",
+            RuntimePaths.BaseDirectory,
+            RuntimePaths.CatalogFolder,
             "treasures.lua");
 
         private Dictionary<long, long> _aliases =

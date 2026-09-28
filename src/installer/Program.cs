@@ -6,7 +6,9 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+#if !INPROCESS
 using System.Windows.Forms;
+#endif
 
 internal static class Program
 {
@@ -18,6 +20,7 @@ internal static class Program
     private const string TargetFileName = "SectionTreasureBoxData.xml";
     private const string ModName = "DragonSwordTreasureMap";
 
+    #if !INPROCESS
     [STAThread]
     private static int Main(string[] args)
     {
@@ -316,6 +319,8 @@ internal static class Program
                 temporaryRoot);
         }
     }
+
+    #endif
 
     private static byte[] FindWorkingAesKey(
         string executablePath, string pakPath)
@@ -736,6 +741,36 @@ internal static class Program
         }
     }
 
+#if INPROCESS
+    public static int GenerateInProcess(string executablePath, string pakPath, string outputPath)
+    {
+        string temporaryRoot = Path.Combine(Path.GetTempPath(), "DragonSwordRadar-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(temporaryRoot);
+        try {
+            byte[] key = FindWorkingAesKey(executablePath, pakPath);
+            string xml = Path.Combine(temporaryRoot, TargetFileName);
+            ExtractTreasureXml(pakPath, key, null, temporaryRoot, xml);
+            return TreasureLuaGenerator.Generate(xml, outputPath);
+        }
+        finally { InstallationFileSystem.TryDeleteDirectory(temporaryRoot); }
+    }
+
+    [System.Runtime.InteropServices.DllImport("radar_native.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+    private static extern int radar_decompress(byte[] input, UIntPtr inputSize, byte[] output, UIntPtr outputSize);
+
+    private static void RunOoz(string ignored, string packedPath, string rawPath)
+    {
+        byte[] packed = File.ReadAllBytes(packedPath);
+        int size = checked((int)BitConverter.ToUInt64(packed, 0));
+        byte[] input = new byte[packed.Length - 8];
+        Buffer.BlockCopy(packed, 8, input, 0, input.Length);
+        // ooz requires output padding for its optimized decoder.
+        byte[] output = new byte[checked(size + 64)];
+        int result = radar_decompress(input, (UIntPtr)input.Length, output, (UIntPtr)size);
+        if (result != size) throw new InvalidDataException("Oodle DLL decompression failed.");
+        using (var file = File.Create(rawPath)) file.Write(output, 0, size);
+    }
+#else
     private static void RunOoz(
         string oozPath, string packedPath, string rawPath)
     {
@@ -760,6 +795,8 @@ internal static class Program
             }
         }
     }
+
+#endif
 
     private static PakFooter ReadFooter(BinaryReader reader)
     {
